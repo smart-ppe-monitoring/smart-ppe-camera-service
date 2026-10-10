@@ -1,0 +1,79 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "./node_modules/@prisma/client-camera"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("CAMERA_DATABASE_URL")
+}
+
+model Camera {
+  id          String    @id @default(dbgenerated("uuid_generate_v7()")) @db.Uuid
+  siteId      String    @map("site_id") @db.Uuid
+  zoneId      String?   @map("zone_id") @db.Uuid
+  name        String    @db.VarChar(150)
+  code        String    @unique @db.VarChar(50)
+  sourceType  String    @default("RTSP") @map("source_type") @db.VarChar(30)
+  streamUrl   String    @map("stream_url") @db.Text
+  status      String    @default("OFFLINE") @db.VarChar(30)
+  location    String?   @db.Text
+  description String?   @db.Text
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  streams    CameraStream[]
+  config     CameraConfig?
+  healthLogs CameraHealthLog[]
+
+  @@index([siteId, status])
+  @@map("cameras")
+}
+
+model CameraStream {
+  id                 String    @id @default(dbgenerated("uuid_generate_v7()")) @db.Uuid
+  cameraId           String    @map("camera_id") @db.Uuid
+  protocol           String    @default("RTSP") @db.VarChar(30)
+  streamUrl          String    @map("stream_url") @db.Text
+  resolution         String    @default("1920x1080") @db.VarChar(30)
+  fps                Int       @default(25)
+  status             String    @default("ACTIVE") @db.VarChar(30)
+  lastConnectedAt    DateTime? @map("last_connected_at")
+  lastDisconnectedAt DateTime? @map("last_disconnected_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  camera Camera @relation(fields: [cameraId], references: [id], onDelete: Cascade)
+
+  @@index([cameraId])
+  @@map("camera_streams")
+}
+
+model CameraConfig {
+  id                String   @id @default(dbgenerated("uuid_generate_v7()")) @db.Uuid
+  cameraId          String   @unique @map("camera_id") @db.Uuid
+  enabled           Boolean  @default(true)
+  captureFps        Int      @default(10) @map("capture_fps")
+  resolution        String   @default("1920x1080") @db.VarChar(30)
+  processingEnabled Boolean  @default(true) @map("processing_enabled")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  camera Camera @relation(fields: [cameraId], references: [id], onDelete: Cascade)
+
+  @@map("camera_configs")
+}
+
+model CameraHealthLog {
+  id           String   @id @default(dbgenerated("uuid_generate_v7()")) @db.Uuid
+  cameraId     String   @map("camera_id") @db.Uuid
+  status       String   @db.VarChar(30)
+  checkedAt    DateTime @default(now()) @map("checked_at")
+  latencyMs    Int?     @map("latency_ms")
+  errorMessage String?  @map("error_message") @db.Text
+
+  camera Camera @relation(fields: [cameraId], references: [id], onDelete: Cascade)
+
+  @@index([cameraId, checkedAt])
+  @@map("camera_health_logs")
+}
