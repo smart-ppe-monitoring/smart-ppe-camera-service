@@ -333,6 +333,15 @@ export class CameraRepository {
       meta: formatPaginationMeta(page, limit, total),
     };
   }
+
+  async checkDatabaseHealth(): Promise<boolean> {
+    try {
+      await (this.db as any).$queryRaw`SELECT 1`;
+      return true;
+    } catch {
+      return false;
+    }
+  }
 }
 
 export const cameraRepository = new CameraRepository();

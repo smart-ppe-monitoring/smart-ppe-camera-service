@@ -15,6 +15,7 @@ import { rateLimitMiddleware } from "./middlewares/rate-limit.middleware";
 import { requestIdMiddleware } from "./middlewares/request-id.middleware";
 import { maintenanceGuard } from "./middlewares/maintenance.middleware";
 import { envConfig } from "./config/env.config";
+import { cameraRepository } from "./modules/camera/camera.repository";
 
 /**
  * Express Application cho Camera Management Microservice (:8892)
@@ -82,16 +83,23 @@ cameraApp.use(express.urlencoded({ extended: true, limit: "2mb" }));
 cameraApp.use(cookieParser());
 
 // 3. Health check endpoints cho Traefik Gateway & Monitoring
-const healthHandler = (_req: express.Request, res: express.Response) => {
-  res.status(200).json({
-    status: "ok",
+const healthHandler = async (_req: express.Request, res: express.Response) => {
+  const isHealthy = await cameraRepository.checkDatabaseHealth();
+  const dbStatus = isHealthy ? "up" : "down";
+
+  res.status(isHealthy ? 200 : 503).json({
+    status: isHealthy ? "ok" : "degraded",
     service: "camera-service",
+    checks: {
+      database: dbStatus,
+    },
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
   });
 };
 
 cameraApp.get("/health", healthHandler);
+cameraApp.get("/health/live", (_req, res) => res.status(200).json({ status: "ok" }));
 cameraApp.get("/api/v1/cameras/health", healthHandler);
 cameraApp.get("/cameras/health", healthHandler);
 

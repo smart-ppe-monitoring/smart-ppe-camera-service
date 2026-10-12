@@ -21,7 +21,7 @@ export class CameraController {
   createCamera = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const body = req.body as CreateCameraDto;
-      const result = await this.service.createCamera(body);
+      const result = await this.service.createCamera(body, req.user?.id);
       res.status(201).json({
         success: true,
         data: result,
@@ -62,7 +62,7 @@ export class CameraController {
     try {
       const { id } = req.params;
       const body = req.body as UpdateCameraDto;
-      const result = await this.service.updateCamera(id, body);
+      const result = await this.service.updateCamera(id, body, req.user?.id);
       res.json({
         success: true,
         data: result,
@@ -75,7 +75,7 @@ export class CameraController {
   deleteCamera = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { id } = req.params;
-      const result = await this.service.deleteCamera(id);
+      const result = await this.service.deleteCamera(id, req.user?.id);
       res.json({
         success: true,
         data: result,

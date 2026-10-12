@@ -16,6 +16,10 @@ import {
   CameraStatus,
   DEFAULT_CAMERA_CONFIG,
 } from "../../common/constants/camera.constant";
+import {
+  AUDIT_ACTION,
+  AUDIT_TARGET_TYPE,
+} from "../../common/constants/audit-log.constant";
 
 /**
  * Che giấu thông tin mật khẩu nhúng trong RTSP/HTTP stream URL (vd: rtsp://user:pass@host -> rtsp://user:***@host)
@@ -25,15 +29,29 @@ export function maskStreamCredentials(url: string | null | undefined): string {
   return url.replace(/:\/\/([^:@\s]+):([^@\s]+)@/g, "://$1:***@");
 }
 
+export interface CameraAuditLogger {
+  recordLog(data: {
+    actorId?: string;
+    action: string;
+    targetType: string;
+    targetId: string;
+    details?: any;
+    ipAddress?: string;
+    userAgent?: string;
+  }): Promise<any>;
+}
+
 export class CameraService {
   private readonly repository: CameraRepository;
+  private readonly audit?: CameraAuditLogger;
 
-  constructor(repository?: CameraRepository) {
+  constructor(repository?: CameraRepository, audit?: CameraAuditLogger) {
     this.repository = repository || cameraRepository;
+    this.audit = audit;
   }
 
   // ── Camera Operations ──────────────────────────────────────────────────────
-  async createCamera(data: CreateCameraDto) {
+  async createCamera(data: CreateCameraDto, actorId?: string) {
     const existing = await this.repository.findCameraByCode(data.code);
     if (existing) {
       throw new AppError(
@@ -43,7 +61,22 @@ export class CameraService {
       );
     }
 
-    return this.repository.createCamera(data);
+    const created = await this.repository.createCamera(data);
+
+    // Ghi AuditLog đăng ký camera
+    await this.audit?.recordLog({
+      actorId,
+      action: AUDIT_ACTION.REGISTER_PPE_CAMERA,
+      targetType: AUDIT_TARGET_TYPE.PPE_CAMERA,
+      targetId: created.id,
+      details: {
+        code: created.code,
+        name: created.name,
+        siteId: created.siteId,
+      },
+    });
+
+    return created;
   }
 
   async findCameraById(id: string) {
@@ -62,7 +95,7 @@ export class CameraService {
     return this.repository.findAllCameras(query);
   }
 
-  async updateCamera(id: string, data: UpdateCameraDto) {
+  async updateCamera(id: string, data: UpdateCameraDto, actorId?: string) {
     await this.findCameraById(id);
 
     if (data.code) {
@@ -76,12 +109,42 @@ export class CameraService {
       }
     }
 
-    return this.repository.updateCamera(id, data);
+    const updated = await this.repository.updateCamera(id, data);
+
+    // Ghi AuditLog cập nhật camera (che giấu mật khẩu stream URL nếu có)
+    const sanitizedDetails = { ...data } as Record<string, unknown>;
+    if (typeof sanitizedDetails.streamUrl === "string") {
+      sanitizedDetails.streamUrl = maskStreamCredentials(sanitizedDetails.streamUrl);
+    }
+
+    await this.audit?.recordLog({
+      actorId,
+      action: AUDIT_ACTION.UPDATE_PPE_CAMERA,
+      targetType: AUDIT_TARGET_TYPE.PPE_CAMERA,
+      targetId: id,
+      details: sanitizedDetails,
+    });
+
+    return updated;
   }
 
-  async deleteCamera(id: string) {
-    await this.findCameraById(id);
-    return this.repository.deleteCamera(id);
+  async deleteCamera(id: string, actorId?: string) {
+    const camera = await this.findCameraById(id);
+    const deleted = await this.repository.deleteCamera(id);
+
+    // Ghi AuditLog xóa camera
+    await this.audit?.recordLog({
+      actorId,
+      action: AUDIT_ACTION.DELETE_PPE_CAMERA,
+      targetType: AUDIT_TARGET_TYPE.PPE_CAMERA,
+      targetId: id,
+      details: {
+        code: camera.code,
+        name: camera.name,
+      },
+    });
+
+    return deleted;
   }
 
   // ── Camera Config Operations ───────────────────────────────────────────────
