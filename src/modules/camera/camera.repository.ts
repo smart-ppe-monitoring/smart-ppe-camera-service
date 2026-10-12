@@ -116,7 +116,8 @@ export class CameraRepository {
   ): Promise<PaginatedResultDto<any>> {
     const page = query.page || 1;
     const limit = query.limit || 20;
-    const skip = calculatePaginationSkip(page, limit);
+    const { skip, take, page: safePage, limit: safeLimit } =
+      calculatePaginationSkip(page, limit);
 
     const where: any = {};
 
@@ -153,7 +154,7 @@ export class CameraRepository {
       (this.db as any).camera.findMany({
         where,
         skip,
-        take: limit,
+        take,
         orderBy,
         include: {
           config: true,
@@ -167,7 +168,7 @@ export class CameraRepository {
 
     return {
       data,
-      meta: formatPaginationMeta(page, limit, total),
+      meta: formatPaginationMeta(safePage, safeLimit, total),
     };
   }
 
@@ -308,7 +309,8 @@ export class CameraRepository {
   ): Promise<PaginatedResultDto<any>> {
     const page = query.page || 1;
     const limit = query.limit || 20;
-    const skip = calculatePaginationSkip(page, limit);
+    const { skip, take, page: safePage, limit: safeLimit } =
+      calculatePaginationSkip(page, limit);
 
     const where: any = {};
     if (query.cameraId) {
@@ -323,14 +325,14 @@ export class CameraRepository {
       (this.db as any).cameraHealthLog.findMany({
         where,
         skip,
-        take: limit,
+        take,
         orderBy: { checkedAt: query.sortOrder || "desc" },
       }),
     ]);
 
     return {
       data,
-      meta: formatPaginationMeta(page, limit, total),
+      meta: formatPaginationMeta(safePage, safeLimit, total),
     };
   }
 
