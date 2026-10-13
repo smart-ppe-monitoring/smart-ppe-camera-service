@@ -172,6 +172,16 @@ export class CameraService {
     return this.repository.upsertCameraConfig(cameraId, data);
   }
 
+  async clearCameraConfig(cameraId: string) {
+    await this.findCameraById(cameraId);
+    return this.repository.upsertCameraConfig(cameraId, {
+      enabled: true,
+      captureFps: 10,
+      resolution: "1920x1080",
+      processingEnabled: true,
+    });
+  }
+
   // ── Camera Stream Operations ───────────────────────────────────────────────
   async createCameraStream(
     cameraId: string,

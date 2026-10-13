@@ -10,12 +10,15 @@ const envSchema = z
     PORT: z.coerce.number().int().positive().default(9999),
 
     // ── Database (Database-per-Service Architecture) ─────────────────────────
-    IDENTITY_DATABASE_URL: z
-      .string()
-      .min(1, "IDENTITY_DATABASE_URL is required"),
-    // Các service DB URLs — optional vì không phải service nào cũng active đồng thời
+    IDENTITY_DATABASE_URL: z.string().optional(),
     SITE_DATABASE_URL: z.string().optional(),
-    CAMERA_DATABASE_URL: z.string().optional(),
+    CAMERA_DATABASE_URL: z
+      .string()
+      .min(1, "CAMERA_DATABASE_URL is required")
+      .default(
+        process.env.DATABASE_URL ||
+          "postgresql://camera_user:camera_password@localhost:5433/camera_db?schema=public",
+      ),
     INCIDENT_DATABASE_URL: z.string().optional(),
     NOTIFICATION_DATABASE_URL: z.string().optional(),
     REPORTING_DATABASE_URL: z.string().optional(),
@@ -364,7 +367,7 @@ export const envConfig = {
   nodeEnv: _env.NODE_ENV,
   port: _env.PORT,
   database: {
-    url: _env.IDENTITY_DATABASE_URL,
+    url: _env.CAMERA_DATABASE_URL || _env.IDENTITY_DATABASE_URL || "",
     siteUrl: _env.SITE_DATABASE_URL,
     cameraUrl: _env.CAMERA_DATABASE_URL,
     incidentUrl: _env.INCIDENT_DATABASE_URL,

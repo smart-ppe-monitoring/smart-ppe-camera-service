@@ -1,6 +1,6 @@
 generator client {
   provider = "prisma-client-js"
-  output   = "./node_modules/@prisma/client-camera"
+  output   = "../node_modules/@prisma/client-camera"
 }
 
 datasource db {

@@ -79,6 +79,14 @@ cameraRouter.put(
   cameraController.updateCameraConfig,
 );
 
+cameraRouter.delete(
+  "/:id/config",
+  authMiddleware,
+  requirePermission(PERMISSIONS.PPE_CAMERA_MANAGE),
+  validate(cameraIdParamSchema, "params"),
+  cameraController.clearCameraConfig,
+);
+
 // Camera Streams (Nested)
 cameraRouter.get(
   "/:id/streams",

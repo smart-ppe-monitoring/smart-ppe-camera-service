@@ -1,9 +1,13 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { jwtConfig } from "../config/jwt.config";
+import { envConfig } from "../config/env.config";
 import { AppError } from "../common/errors/app-error";
 import { ERROR_CODE } from "../common/errors/error-code";
 import { JWT_PURPOSE, JWT_ALGORITHM } from "../common/constants/jwt.constant";
+import { PERMISSIONS } from "../common/constants/permission.constant";
+import { ROLES } from "../common/constants/role.constant";
+import { isTrustedGatewayRequest } from "./request-id.middleware";
 
 export function extractTokenFromRequest(req: Request): string | undefined {
   let token = req.cookies?.accessToken;
@@ -54,6 +58,17 @@ export async function authMiddleware(
   const token = extractTokenFromRequest(req);
 
   if (!token) {
+    const gatewaySecret = envConfig.gateway.internalSecret;
+    if (gatewaySecret && isTrustedGatewayRequest(req, gatewaySecret)) {
+      req.user = {
+        id: "system-internal-service",
+        email: "system@internal.ppe.local",
+        role: ROLES.ADMIN,
+        permissions: Object.values(PERMISSIONS),
+      };
+      return next();
+    }
+
     next(new AppError("Unauthorized", 401, ERROR_CODE.UNAUTHORIZED));
     return;
   }

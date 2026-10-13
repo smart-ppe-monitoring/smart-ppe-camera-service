@@ -117,6 +117,23 @@ export class CameraController {
     }
   };
 
+  clearCameraConfig = async (
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      const { id } = req.params;
+      const result = await this.service.clearCameraConfig(id);
+      res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
   // ── Camera Stream Endpoints ────────────────────────────────────────────────
   getCameraStreams = async (
     req: Request,
