@@ -16,6 +16,11 @@ import { requestIdMiddleware } from "./middlewares/request-id.middleware";
 import { maintenanceGuard } from "./middlewares/maintenance.middleware";
 import { envConfig } from "./config/env.config";
 import { cameraPrisma } from "./database/camera.client";
+import { buildOpenApiSpec } from "./config/openapi/openapi.registry";
+import { registerCameraOpenApi } from "./modules/camera/camera.openapi";
+
+// Khởi tạo các định nghĩa OpenAPI
+registerCameraOpenApi();
 
 /**
  * Express Application cho Camera Management Microservice (:8892)
@@ -108,6 +113,10 @@ cameraApp.get("/health", healthHandler);
 cameraApp.get("/health/live", (_req, res) => res.status(200).json({ status: "ok" }));
 cameraApp.get("/api/v1/cameras/health", healthHandler);
 cameraApp.get("/cameras/health", healthHandler);
+
+// 3.1 OpenAPI Specification Endpoint
+cameraApp.get("/openapi.json", (_req, res) => res.status(200).json(buildOpenApiSpec()));
+cameraApp.get("/api/v1/cameras/openapi.json", (_req, res) => res.status(200).json(buildOpenApiSpec()));
 
 // 4. Mount Camera & Stream Routes
 // Hỗ trợ dual-mount cả prefix /api/v1/cameras và /cameras khi qua Gateway hoặc gọi trực tiếp
