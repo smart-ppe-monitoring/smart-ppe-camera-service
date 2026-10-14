@@ -243,16 +243,25 @@ export class CameraService {
       success = false;
     }
 
-    // Cập nhật trạng thái camera và ghi health log
-    await Promise.all([
-      this.repository.updateCameraStatus(id, status),
-      this.repository.createHealthLog({
+    // Cập nhật trạng thái camera và ghi health log nguyên tử qua transaction
+    if (typeof (this.repository as any).recordPingResult === "function") {
+      await (this.repository as any).recordPingResult(id, status, {
         cameraId: id,
         status,
         latencyMs,
         errorMessage,
-      }),
-    ]);
+      });
+    } else {
+      await Promise.all([
+        this.repository.updateCameraStatus(id, status),
+        this.repository.createHealthLog({
+          cameraId: id,
+          status,
+          latencyMs,
+          errorMessage,
+        }),
+      ]);
+    }
 
     return {
       cameraId: id,

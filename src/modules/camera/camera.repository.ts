@@ -293,6 +293,30 @@ export class CameraRepository {
   }
 
   // ── Camera Health Log Operations ───────────────────────────────────────────
+  async recordPingResult(
+    id: string,
+    status: any,
+    log: CreateCameraHealthLogDto,
+  ) {
+    return (this.db as any).$transaction(
+      [
+        (this.db as any).camera.update({
+          where: { id },
+          data: { status },
+        }),
+        (this.db as any).cameraHealthLog.create({
+          data: {
+            cameraId: log.cameraId,
+            status: log.status,
+            latencyMs: log.latencyMs ?? null,
+            errorMessage: log.errorMessage ?? null,
+          },
+        }),
+      ],
+      DEFAULT_CAMERA_TRANSACTION_OPTIONS,
+    );
+  }
+
   async createHealthLog(data: CreateCameraHealthLogDto) {
     return (this.db as any).cameraHealthLog.create({
       data: {
