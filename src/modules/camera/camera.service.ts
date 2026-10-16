@@ -26,7 +26,34 @@ import {
  */
 export function maskStreamCredentials(url: string | null | undefined): string {
   if (!url) return "";
-  return url.replace(/:\/\/([^:@\s]+):([^@\s]+)@/g, "://$1:***@");
+  try {
+    const parsed = new URL(url);
+    if (parsed.password) {
+      parsed.password = "***";
+      return parsed.toString();
+    }
+  } catch {}
+  return url.replace(/:\/\/([^:\s\/]+):(.*)@([^:\/\s]+)/g, "://$1:***@$3");
+}
+
+function sanitizeCameraEntity<T extends { streamUrl?: string | null; streams?: Array<{ streamUrl?: string | null }> }>(camera: T): T {
+  if (!camera) return camera;
+  return {
+    ...camera,
+    streamUrl: maskStreamCredentials(camera.streamUrl),
+    streams: camera.streams?.map((s) => ({
+      ...s,
+      streamUrl: maskStreamCredentials(s.streamUrl),
+    })),
+  };
+}
+
+function sanitizeStreamEntity<T extends { streamUrl?: string | null }>(stream: T): T {
+  if (!stream) return stream;
+  return {
+    ...stream,
+    streamUrl: maskStreamCredentials(stream.streamUrl),
+  };
 }
 
 export interface CameraAuditLogger {
@@ -76,7 +103,7 @@ export class CameraService {
       },
     });
 
-    return created;
+    return sanitizeCameraEntity(created);
   }
 
   async findCameraById(id: string) {
@@ -88,11 +115,15 @@ export class CameraService {
         ERROR_CODE.NOT_FOUND,
       );
     }
-    return camera;
+    return sanitizeCameraEntity(camera);
   }
 
   async findAllCameras(query: CameraQueryDto) {
-    return this.repository.findAllCameras(query);
+    const result = await this.repository.findAllCameras(query);
+    return {
+      ...result,
+      data: result.data.map((c: any) => sanitizeCameraEntity(c)),
+    };
   }
 
   async updateCamera(id: string, data: UpdateCameraDto, actorId?: string) {
@@ -125,7 +156,7 @@ export class CameraService {
       details: sanitizedDetails,
     });
 
-    return updated;
+    return sanitizeCameraEntity(updated);
   }
 
   async deleteCamera(id: string, actorId?: string) {
@@ -188,15 +219,17 @@ export class CameraService {
     data: Omit<CreateCameraStreamDto, "cameraId">,
   ) {
     await this.findCameraById(cameraId);
-    return this.repository.createCameraStream({
+    const createdStream = await this.repository.createCameraStream({
       ...data,
       cameraId,
     });
+    return sanitizeStreamEntity(createdStream);
   }
 
   async findStreamsByCameraId(cameraId: string) {
     await this.findCameraById(cameraId);
-    return this.repository.findStreamsByCameraId(cameraId);
+    const streams = await this.repository.findStreamsByCameraId(cameraId);
+    return streams.map((s: any) => sanitizeStreamEntity(s));
   }
 
   async findCameraStreamById(id: string) {
@@ -208,12 +241,13 @@ export class CameraService {
         ERROR_CODE.NOT_FOUND,
       );
     }
-    return stream;
+    return sanitizeStreamEntity(stream);
   }
 
   async updateCameraStream(id: string, data: UpdateCameraStreamDto) {
     await this.findCameraStreamById(id);
-    return this.repository.updateCameraStream(id, data);
+    const updated = await this.repository.updateCameraStream(id, data);
+    return sanitizeStreamEntity(updated);
   }
 
   async deleteCameraStream(id: string) {

@@ -114,9 +114,11 @@ cameraApp.get("/health/live", (_req, res) => res.status(200).json({ status: "ok"
 cameraApp.get("/api/v1/cameras/health", healthHandler);
 cameraApp.get("/cameras/health", healthHandler);
 
-// 3.1 OpenAPI Specification Endpoint
-cameraApp.get("/openapi.json", (_req, res) => res.status(200).json(buildOpenApiSpec()));
-cameraApp.get("/api/v1/cameras/openapi.json", (_req, res) => res.status(200).json(buildOpenApiSpec()));
+// 3.1 OpenAPI Specification Endpoint (Chỉ mở trên dev/staging, ẩn trên production)
+if (envConfig.nodeEnv !== "production") {
+  cameraApp.get("/openapi.json", (_req, res) => res.status(200).json(buildOpenApiSpec()));
+  cameraApp.get("/api/v1/cameras/openapi.json", (_req, res) => res.status(200).json(buildOpenApiSpec()));
+}
 
 // 4. Mount Camera & Stream Routes
 // Hỗ trợ dual-mount cả prefix /api/v1/cameras và /cameras khi qua Gateway hoặc gọi trực tiếp
