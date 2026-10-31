@@ -29,6 +29,8 @@ model Camera {
 
   @@index([siteId, status])
   @@index([deletedAt])
+  @@index([createdAt])
+  @@index([siteId, createdAt])
   @@map("cameras")
 }
 

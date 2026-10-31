@@ -134,6 +134,26 @@ export class CameraController {
     }
   };
 
+  /**
+   * SEC-32: Reset cấu hình camera về mặc định (POST /:id/config/reset)
+   */
+  resetCameraConfig = async (
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      const { id } = req.params;
+      const result = await this.service.resetCameraConfig(id, req.user?.id, req.user);
+      res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
   // ── Camera Stream Endpoints ────────────────────────────────────────────────
   getCameraStreams = async (
     req: Request,

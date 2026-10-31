@@ -88,6 +88,15 @@ cameraRouter.delete(
   cameraController.clearCameraConfig,
 );
 
+// SEC-32: Tuyến API đặt lại cấu hình camera về mặc định
+cameraRouter.post(
+  "/:id/config/reset",
+  authMiddleware,
+  requirePermission(PERMISSIONS.PPE_CAMERA_MANAGE),
+  validate(cameraIdParamSchema, "params"),
+  cameraController.resetCameraConfig,
+);
+
 // Camera Streams (Nested)
 cameraRouter.get(
   "/:id/streams",

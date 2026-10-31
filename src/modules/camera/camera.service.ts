@@ -474,22 +474,68 @@ export class CameraService {
     return updated;
   }
 
+  /**
+   * SEC-32: Thực hiện xóa thực sự bản ghi cấu hình camera thay vì silent upsert các giá trị mặc định.
+   */
   async clearCameraConfig(
+    cameraId: string,
+    actorId?: string,
+    userContext?: UserContext,
+  ) {
+    const camera = await this.findCameraById(cameraId, userContext);
+    const existingConfig =
+      typeof (this.repository as any).findCameraConfig === "function"
+        ? await (this.repository as any).findCameraConfig(cameraId)
+        : null;
+
+    if (typeof (this.repository as any).deleteCameraConfig === "function") {
+      await (this.repository as any).deleteCameraConfig(cameraId);
+    }
+
+    await this.audit?.recordLog({
+      actorId,
+      action: AUDIT_ACTION.DELETE_PPE_CAMERA_SAFETY_CONFIG,
+      targetType: AUDIT_TARGET_TYPE.PPE_CAMERA,
+      targetId: cameraId,
+      details: {
+        cameraCode: camera.code,
+        previousConfig: existingConfig
+          ? {
+              enabled: existingConfig.enabled,
+              captureFps: existingConfig.captureFps,
+              resolution: existingConfig.resolution,
+              processingEnabled: existingConfig.processingEnabled,
+            }
+          : null,
+      },
+    });
+
+    return {
+      success: true,
+      cameraId,
+      deleted: true,
+    };
+  }
+
+  /**
+   * SEC-32: Đặt lại cấu hình camera về giá trị mặc định theo đúng REST semantics với đầy đủ audit log.
+   */
+  async resetCameraConfig(
     cameraId: string,
     actorId?: string,
     userContext?: UserContext,
   ) {
     await this.findCameraById(cameraId, userContext);
     const updated = await this.repository.upsertCameraConfig(cameraId, {
-      enabled: true,
-      captureFps: 10,
-      resolution: "1920x1080",
-      processingEnabled: true,
+      enabled: DEFAULT_CAMERA_CONFIG.enabled,
+      captureFps: DEFAULT_CAMERA_CONFIG.captureFps,
+      resolution: DEFAULT_CAMERA_CONFIG.resolution,
+      processingEnabled: DEFAULT_CAMERA_CONFIG.processingEnabled,
     });
 
     await this.audit?.recordLog({
       actorId,
-      action: AUDIT_ACTION.DELETE_PPE_CAMERA_SAFETY_CONFIG,
+      action: AUDIT_ACTION.UPDATE_PPE_CAMERA_SAFETY_CONFIG,
       targetType: AUDIT_TARGET_TYPE.PPE_CAMERA,
       targetId: cameraId,
       details: { resetToDefault: true },

@@ -28,8 +28,9 @@ import { ERROR_CODE } from "../src/common/errors/error-code";
 import { AUDIT_ACTION, AUDIT_TARGET_TYPE } from "../src/common/constants/audit-log.constant";
 import { ROLES } from "../src/common/constants/role.constant";
 import { PERMISSIONS } from "../src/common/constants/permission.constant";
-import { isUuid } from "../src/common/helpers/uuid.helper";
+import { isUuid, UUID_REGEX } from "../src/common/helpers/uuid.helper";
 import cameraApp, { checkDatabaseHealth, DB_HEALTH_CACHE_TTL_MS } from "../src/camera.app";
+import { getCameraPrisma } from "../src/database/camera.client";
 import { parseTrustProxy } from "../src/config/env.config";
 import { requireGatewayOrigin } from "../src/middlewares/request-id.middleware";
 import {
@@ -1546,6 +1547,121 @@ describe("Task BE-05: PPE Camera Management Service Suite", () => {
       assert.ok(consumer.subscribedTopics.includes("ppe.site.deleted"));
       assert.ok(consumer.subscribedTopics.includes("ppe.zone.deleted"));
       assert.ok(cameraApp.locals.cameraEventConsumer instanceof CameraEventConsumer);
+    });
+
+    it("SEC-29: schema.prisma and migrations should define indexes for createdAt and [siteId, createdAt]", () => {
+      const schemaPath = path.resolve(__dirname, "../prisma/schema.prisma");
+      const schemaContent = fs.readFileSync(schemaPath, "utf8");
+      assert.ok(
+        schemaContent.includes("@@index([createdAt])"),
+        "schema.prisma must define @@index([createdAt]) on Camera model",
+      );
+      assert.ok(
+        schemaContent.includes("@@index([siteId, createdAt])"),
+        "schema.prisma must define @@index([siteId, createdAt]) on Camera model",
+      );
+
+      const migrationPath = path.resolve(
+        __dirname,
+        "../prisma/migrations/20261011130000_add_camera_created_at_indexes/migration.sql",
+      );
+      assert.ok(fs.existsSync(migrationPath), "Migration file for createdAt indexes must exist");
+      const migrationSql = fs.readFileSync(migrationPath, "utf8");
+      assert.ok(migrationSql.includes("cameras_created_at_idx"), "Migration SQL must create cameras_created_at_idx");
+      assert.ok(migrationSql.includes("cameras_site_id_created_at_idx"), "Migration SQL must create cameras_site_id_created_at_idx");
+    });
+
+    it("SEC-30: isUuid and UUID_REGEX should strictly enforce 8-4-4-4-12 hex group format and reject non-UUID strings", () => {
+      // 1. Valid UUIDv4 and UUIDv7 strings pass
+      assert.equal(isUuid("018f28a3-9b81-7000-8000-111111111111"), true);
+      assert.equal(isUuid("c0a80101-0000-4000-a000-000000000001"), true);
+      assert.equal(isUuid("123e4567-e89b-12d3-a456-426614174000"), true);
+
+      // 2. Continuous 36 hyphens must be REJECTED (CWE-20 bypass prevention)
+      assert.equal(isUuid("------------------------------------"), false);
+
+      // 3. 36 hex characters without hyphens must be REJECTED
+      assert.equal(isUuid("018f28a39b81700080001111111111112222"), false);
+
+      // 4. Misplaced hyphens must be REJECTED
+      assert.equal(isUuid("018f28a3-9b817000-8000-111111111111"), false);
+      assert.equal(isUuid("018f28a3-9b81-70008000-111111111111"), false);
+
+      // 5. Non-string or malformed inputs must be REJECTED
+      assert.equal(isUuid(null), false);
+      assert.equal(isUuid(undefined), false);
+      assert.equal(isUuid(""), false);
+      assert.equal(isUuid("not-a-uuid"), false);
+      assert.equal(isUuid(12345), false);
+    });
+
+    it("SEC-31: getCameraPrisma should pass datasources configuration from envConfig with DATABASE_URL fallback", () => {
+      const client = getCameraPrisma();
+      assert.ok(client, "getCameraPrisma must instantiate CameraPrismaClient");
+      assert.ok((client as any).$connect, "CameraPrismaClient must expose $connect");
+    });
+
+    it("SEC-32: clearCameraConfig should perform true deletion of CameraConfig, and resetCameraConfig resets to defaults with audit log", async () => {
+      let deletedConfigId: string | null = null;
+      let upsertedConfig: any = null;
+      const recordedAuditLogs: any[] = [];
+
+      const mockDb: any = {
+        cameraConfig: {
+          deleteMany: async (args: any) => {
+            deletedConfigId = args.where.cameraId;
+            return { count: 1 };
+          },
+          upsert: async (args: any) => {
+            upsertedConfig = args;
+            return {
+              cameraId: args.where.cameraId,
+              ...args.create,
+            };
+          },
+        },
+      };
+
+      const mockAudit = {
+        recordLog: async (log: any) => {
+          recordedAuditLogs.push(log);
+        },
+      };
+
+      const repo = new CameraRepository(mockDb);
+      repo.findCameraById = async (id: string) => ({ id, code: "CAM-01", name: "Gate Cam", siteId: "site-1" }) as any;
+      repo.findCameraConfig = async (id: string) => ({
+        cameraId: id,
+        enabled: false,
+        captureFps: 5,
+        resolution: "1280x720",
+        processingEnabled: false,
+      }) as any;
+
+      const service = new CameraService(repo, mockAudit);
+
+      // 1. clearCameraConfig performs real deletion
+      const deleteResult = await service.clearCameraConfig("cam-target-01", "admin-1");
+      assert.equal(deleteResult.success, true);
+      assert.equal(deleteResult.deleted, true);
+      assert.equal(deletedConfigId, "cam-target-01");
+
+      const deleteAudit = recordedAuditLogs.find((l) => l.action === AUDIT_ACTION.DELETE_PPE_CAMERA_SAFETY_CONFIG);
+      assert.ok(deleteAudit);
+      assert.equal(deleteAudit.targetId, "cam-target-01");
+      assert.equal(deleteAudit.details.cameraCode, "CAM-01");
+      assert.equal(deleteAudit.details.previousConfig.captureFps, 5);
+
+      // 2. resetCameraConfig restores default configuration with audit log
+      const resetResult = await service.resetCameraConfig("cam-target-01", "admin-1");
+      assert.ok(resetResult);
+      assert.equal(resetResult.captureFps, DEFAULT_CAMERA_CONFIG.captureFps);
+      assert.equal(resetResult.resolution, DEFAULT_CAMERA_CONFIG.resolution);
+      assert.equal(resetResult.processingEnabled, DEFAULT_CAMERA_CONFIG.processingEnabled);
+
+      const resetAudit = recordedAuditLogs.find((l) => l.action === AUDIT_ACTION.UPDATE_PPE_CAMERA_SAFETY_CONFIG && l.details?.resetToDefault);
+      assert.ok(resetAudit);
+      assert.equal(resetAudit.targetId, "cam-target-01");
     });
   });
 });

@@ -315,6 +315,15 @@ export class CameraRepository {
     });
   }
 
+  /**
+   * SEC-32: Xóa thực sự bản ghi CameraConfig trong cơ sở dữ liệu thay vì upsert đè giá trị mặc định.
+   */
+  async deleteCameraConfig(cameraId: string) {
+    return (this.db as any).cameraConfig.deleteMany({
+      where: { cameraId },
+    });
+  }
+
   // ── Camera Stream Operations ───────────────────────────────────────────────
   async createCameraStream(data: CreateCameraStreamDto) {
     return (this.db as any).cameraStream.create({
