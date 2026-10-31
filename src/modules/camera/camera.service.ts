@@ -17,10 +17,18 @@ import {
   CameraStatus,
   DEFAULT_CAMERA_CONFIG,
 } from "../../common/constants/camera.constant";
+import { ROLES } from "../../common/constants/role.constant";
 import {
   AUDIT_ACTION,
   AUDIT_TARGET_TYPE,
 } from "../../common/constants/audit-log.constant";
+
+export interface UserContext {
+  id?: string;
+  role?: string;
+  siteId?: string;
+  siteIds?: string[];
+}
 
 /**
  * Che giấu thông tin mật khẩu nhúng trong RTSP/HTTP stream URL (vd: rtsp://user:pass@host -> rtsp://user:***@host)
@@ -165,8 +173,37 @@ export class CameraService {
     this.pinger = pinger || probeStreamConnection;
   }
 
+  // ── Site Scoping & Tenant Isolation (SEC-08) ──────────────────────────────
+  private getAllowedSiteIds(user?: UserContext): string[] | null {
+    if (!user) return null; // Unrestricted if no user context supplied (e.g. internal calls)
+    if (user.role === ROLES.ADMIN || user.role === "ADMIN") return null; // Admin unrestricted
+    return [
+      ...(user.siteId ? [user.siteId] : []),
+      ...(Array.isArray(user.siteIds) ? user.siteIds : []),
+    ];
+  }
+
+  private assertSiteAccess(siteId?: string | null, user?: UserContext) {
+    if (!siteId) return;
+    const allowed = this.getAllowedSiteIds(user);
+    if (allowed === null) return;
+    if (allowed.length === 0 || !allowed.includes(siteId)) {
+      throw new AppError(
+        "Bạn không có quyền truy cập hoặc quản lý camera thuộc công trường này",
+        403,
+        ERROR_CODE.FORBIDDEN,
+      );
+    }
+  }
+
   // ── Camera Operations ──────────────────────────────────────────────────────
-  async createCamera(data: CreateCameraDto, actorId?: string) {
+  async createCamera(
+    data: CreateCameraDto,
+    actorId?: string,
+    userContext?: UserContext,
+  ) {
+    this.assertSiteAccess(data.siteId, userContext);
+
     const existing = await this.repository.findCameraByCode(data.code);
     if (existing) {
       throw new AppError(
@@ -194,7 +231,7 @@ export class CameraService {
     return sanitizeCameraEntity(created);
   }
 
-  async findCameraById(id: string) {
+  async findCameraById(id: string, userContext?: UserContext) {
     const camera = await this.repository.findCameraById(id);
     if (!camera) {
       throw new AppError(
@@ -203,19 +240,50 @@ export class CameraService {
         ERROR_CODE.NOT_FOUND,
       );
     }
+    this.assertSiteAccess(camera.siteId, userContext);
     return sanitizeCameraEntity(camera);
   }
 
-  async findAllCameras(query: CameraQueryDto) {
-    const result = await this.repository.findAllCameras(query);
+  async findAllCameras(query: CameraQueryDto, userContext?: UserContext) {
+    const scopedQuery = { ...query };
+    const allowedSiteIds = this.getAllowedSiteIds(userContext);
+
+    if (allowedSiteIds !== null) {
+      if (scopedQuery.siteId) {
+        if (!allowedSiteIds.includes(scopedQuery.siteId)) {
+          throw new AppError(
+            "Bạn không có quyền truy cập camera thuộc công trường này",
+            403,
+            ERROR_CODE.FORBIDDEN,
+          );
+        }
+      } else if (allowedSiteIds.length === 1) {
+        scopedQuery.siteId = allowedSiteIds[0];
+      } else if (allowedSiteIds.length > 1) {
+        (scopedQuery as any).siteIds = allowedSiteIds;
+      } else {
+        throw new AppError(
+          "Người dùng chưa được phân công công trường quản lý",
+          403,
+          ERROR_CODE.FORBIDDEN,
+        );
+      }
+    }
+
+    const result = await this.repository.findAllCameras(scopedQuery);
     return {
       ...result,
       data: result.data.map((c: any) => sanitizeCameraEntity(c)),
     };
   }
 
-  async updateCamera(id: string, data: UpdateCameraDto, actorId?: string) {
-    await this.findCameraById(id);
+  async updateCamera(
+    id: string,
+    data: UpdateCameraDto,
+    actorId?: string,
+    userContext?: UserContext,
+  ) {
+    await this.findCameraById(id, userContext);
 
     if (data.code) {
       const existing = await this.repository.findCameraByCode(data.code);
@@ -247,8 +315,8 @@ export class CameraService {
     return sanitizeCameraEntity(updated);
   }
 
-  async deleteCamera(id: string, actorId?: string) {
-    const camera = await this.findCameraById(id);
+  async deleteCamera(id: string, actorId?: string, userContext?: UserContext) {
+    const camera = await this.findCameraById(id, userContext);
     const deleted = await this.repository.deleteCamera(id);
 
     // Ghi AuditLog xóa camera
@@ -267,8 +335,8 @@ export class CameraService {
   }
 
   // ── Camera Config Operations ───────────────────────────────────────────────
-  async getCameraConfig(cameraId: string) {
-    await this.findCameraById(cameraId);
+  async getCameraConfig(cameraId: string, userContext?: UserContext) {
+    await this.findCameraById(cameraId, userContext);
 
     const config = await this.repository.findCameraConfig(cameraId);
     if (!config) {
@@ -286,13 +354,19 @@ export class CameraService {
   async updateCameraConfig(
     cameraId: string,
     data: UpdateCameraConfigDto,
+    actorId?: string,
+    userContext?: UserContext,
   ) {
-    await this.findCameraById(cameraId);
+    await this.findCameraById(cameraId, userContext);
     return this.repository.upsertCameraConfig(cameraId, data);
   }
 
-  async clearCameraConfig(cameraId: string) {
-    await this.findCameraById(cameraId);
+  async clearCameraConfig(
+    cameraId: string,
+    actorId?: string,
+    userContext?: UserContext,
+  ) {
+    await this.findCameraById(cameraId, userContext);
     return this.repository.upsertCameraConfig(cameraId, {
       enabled: true,
       captureFps: 10,
@@ -305,8 +379,9 @@ export class CameraService {
   async createCameraStream(
     cameraId: string,
     data: Omit<CreateCameraStreamDto, "cameraId">,
+    userContext?: UserContext,
   ) {
-    await this.findCameraById(cameraId);
+    await this.findCameraById(cameraId, userContext);
     const createdStream = await this.repository.createCameraStream({
       ...data,
       cameraId,
@@ -314,8 +389,8 @@ export class CameraService {
     return sanitizeStreamEntity(createdStream);
   }
 
-  async findStreamsByCameraId(cameraId: string) {
-    await this.findCameraById(cameraId);
+  async findStreamsByCameraId(cameraId: string, userContext?: UserContext) {
+    await this.findCameraById(cameraId, userContext);
     const streams = await this.repository.findStreamsByCameraId(cameraId);
     return streams.map((s: any) => sanitizeStreamEntity(s));
   }
@@ -344,8 +419,11 @@ export class CameraService {
   }
 
   // ── Health Probe & Ping Operations ─────────────────────────────────────────
-  async pingCamera(id: string): Promise<PingCameraResultDto> {
-    const camera = await this.findCameraById(id);
+  async pingCamera(
+    id: string,
+    userContext?: UserContext,
+  ): Promise<PingCameraResultDto> {
+    const camera = await this.findCameraById(id, userContext);
     const checkedAt = new Date();
 
     // Kiểm tra định dạng cơ bản của streamUrl
@@ -426,9 +504,12 @@ export class CameraService {
     }
   }
 
-  async findHealthLogs(query: CameraHealthLogQueryDto) {
+  async findHealthLogs(
+    query: CameraHealthLogQueryDto,
+    userContext?: UserContext,
+  ) {
     if (query.cameraId) {
-      await this.findCameraById(query.cameraId);
+      await this.findCameraById(query.cameraId, userContext);
     }
     return this.repository.findHealthLogs(query);
   }

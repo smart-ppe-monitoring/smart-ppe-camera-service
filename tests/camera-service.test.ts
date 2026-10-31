@@ -587,5 +587,162 @@ describe("Task BE-05: PPE Camera Management Service Suite", () => {
       assert.equal(loggedData.status, CAMERA_STATUS.OFFLINE);
       assert.equal(loggedData.errorMessage, "Connection refused");
     });
+
+    it("SEC-05: Dockerfile should enforce frozen lockfile and copy keys directory into runner stage", async () => {
+      const fs = await import("fs");
+      const path = await import("path");
+      const dockerfilePath = path.join(__dirname, "../Dockerfile");
+      const dockerfileContent = fs.readFileSync(dockerfilePath, "utf-8");
+
+      assert.ok(dockerfileContent.includes("pnpm install --frozen-lockfile"));
+      assert.ok(dockerfileContent.includes("COPY --from=builder /app/keys ./keys"));
+      assert.ok(fs.existsSync(path.join(__dirname, "../keys/public.key.pem")));
+    });
+
+    it("SEC-06: authMiddleware should reject tokens with mustChangePassword: true", async () => {
+      const { authMiddleware } = await import("../src/middlewares/auth.middleware");
+      const { jwtConfig } = await import("../src/config/jwt.config");
+      const jwt = (await import("jsonwebtoken")).default;
+      const crypto = await import("crypto");
+
+      const { privateKey, publicKey } = crypto.generateKeyPairSync("rsa", {
+        modulusLength: 2048,
+        publicKeyEncoding: { type: "spki", format: "pem" },
+        privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      });
+
+      const originalPublicKey = jwtConfig.publicKey;
+      (jwtConfig as any).publicKey = publicKey;
+
+      try {
+        const token = jwt.sign(
+          {
+            id: "user-must-change",
+            role: "OPERATOR",
+            purpose: "ACCESS",
+            mustChangePassword: true,
+          },
+          privateKey,
+          { algorithm: "RS256", expiresIn: "5m" },
+        );
+
+        let capturedError: any = null;
+        const mockReq: any = {
+          headers: { authorization: `Bearer ${token}` },
+          cookies: {},
+          query: {},
+        };
+        const mockRes: any = {};
+
+        await authMiddleware(mockReq, mockRes, (err?: any) => {
+          capturedError = err;
+        });
+
+        assert.ok(capturedError instanceof AppError);
+        assert.equal(capturedError.statusCode, 403);
+        assert.equal(capturedError.code, ERROR_CODE.FORBIDDEN);
+        assert.equal(mockReq.user, undefined);
+      } finally {
+        (jwtConfig as any).publicKey = originalPublicKey;
+      }
+    });
+
+    it("SEC-07: CameraRepository should include retention purge in recordPingResult and export purgeExpiredHealthLogs", async () => {
+      let transactionOperations: any[] = [];
+      const mockDb: any = {
+        $transaction: async (ops: any[]) => {
+          transactionOperations = ops;
+          return ops;
+        },
+        camera: { update: (args: any) => ({ op: "camera.update", ...args }) },
+        cameraHealthLog: {
+          create: (args: any) => ({ op: "cameraHealthLog.create", ...args }),
+          deleteMany: (args: any) => ({ op: "cameraHealthLog.deleteMany", count: 5, ...args }),
+        },
+      };
+
+      const repo = new CameraRepository(mockDb);
+      await repo.recordPingResult("cam-1", CAMERA_STATUS.ONLINE, {
+        cameraId: "cam-1",
+        status: CAMERA_STATUS.ONLINE,
+        latencyMs: 15,
+      }, 30);
+
+      // Verify transaction includes auto-purge deleteMany
+      assert.equal(transactionOperations.length, 3);
+      assert.equal(transactionOperations[2].op, "cameraHealthLog.deleteMany");
+      assert.equal(transactionOperations[2].where.cameraId, "cam-1");
+      assert.ok(transactionOperations[2].where.checkedAt.lt instanceof Date);
+
+      // Test standalone purgeExpiredHealthLogs
+      const purgedCount = await repo.purgeExpiredHealthLogs(30);
+      assert.equal(purgedCount, 5);
+    });
+
+    it("SEC-08: CameraService should enforce site scoping (BOLA protection) for non-admin users", async () => {
+      const mockCameras = [
+        { id: "cam-site-a", name: "Cam Site A", siteId: "site-a-uuid" },
+        { id: "cam-site-b", name: "Cam Site B", siteId: "site-b-uuid" },
+      ];
+
+      const mockRepo = {
+        findCameraById: async (id: string) => {
+          const found = mockCameras.find((c) => c.id === id);
+          return found || null;
+        },
+        findAllCameras: async (query: any) => {
+          let filtered = [...mockCameras];
+          if (query.siteId) {
+            filtered = filtered.filter((c) => c.siteId === query.siteId);
+          }
+          return { data: filtered, meta: { total: filtered.length, page: 1, limit: 10, totalPages: 1 } };
+        },
+      } as unknown as CameraRepository;
+
+      const service = new CameraService(mockRepo);
+
+      // User from Site A trying to access Camera from Site B
+      const nonAdminUserSiteA = {
+        id: "user-site-a",
+        role: "SAFETY_OFFICER",
+        siteId: "site-a-uuid",
+      };
+
+      await assert.rejects(
+        async () => {
+          await service.findCameraById("cam-site-b", nonAdminUserSiteA);
+        },
+        (err: any) => {
+          assert.ok(err instanceof AppError);
+          assert.equal(err.statusCode, 403);
+          assert.equal(err.code, ERROR_CODE.FORBIDDEN);
+          return true;
+        },
+      );
+
+      // User from Site A successfully accessing Camera from Site A
+      const camA = await service.findCameraById("cam-site-a", nonAdminUserSiteA);
+      assert.equal(camA.id, "cam-site-a");
+
+      // Non-admin querying Site B explicitly -> Forbidden
+      await assert.rejects(
+        async () => {
+          await service.findAllCameras({ siteId: "site-b-uuid" }, nonAdminUserSiteA);
+        },
+        (err: any) => {
+          assert.ok(err instanceof AppError);
+          assert.equal(err.statusCode, 403);
+          return true;
+        },
+      );
+
+      // Admin user can access any camera across sites
+      const adminUser = {
+        id: "admin-user",
+        role: "ADMIN",
+      };
+      const camBForAdmin = await service.findCameraById("cam-site-b", adminUser);
+      assert.equal(camBForAdmin.id, "cam-site-b");
+    });
   });
 });

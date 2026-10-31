@@ -237,3 +237,13 @@ export const authRateLimitMiddleware = createRateLimiter({
   maxRequests: envConfig.rateLimit.authMaxRequests,
   message: "Too many authentication attempts, please try again later",
 });
+
+/**
+ * SEC-07: Rate Limiter nghiêm ngặt dành riêng cho endpoint ping probe camera
+ * ngăn chặn DoS và phình to bảng nhật ký camera_health_logs.
+ */
+export const pingRateLimitMiddleware = createRateLimiter({
+  windowMs: 60 * 1000,
+  maxRequests: 30,
+  message: "Quá giới hạn tần suất kiểm tra sức khỏe camera, vui lòng thử lại sau",
+});

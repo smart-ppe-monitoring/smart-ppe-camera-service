@@ -111,11 +111,31 @@ export async function authMiddleware(
       return;
     }
 
+    // SEC-06: Chặn token có cờ mustChangePassword truy cập satellite services
+    const jwtPayload = payload as any;
+    if (
+      jwtPayload.mustChangePassword === true ||
+      jwtPayload.mustChangePassword === "true"
+    ) {
+      next(
+        new AppError(
+          "Bạn bắt buộc phải đổi mật khẩu trước khi thực hiện các thao tác khác trên hệ thống",
+          403,
+          ERROR_CODE.FORBIDDEN,
+        ),
+      );
+      return;
+    }
+
     req.user = {
       id: payload.id || payload.sub,
       email: payload.email,
       role: payload.role,
       roleId: payload.roleId,
+      siteId: typeof jwtPayload.siteId === "string" ? jwtPayload.siteId : undefined,
+      siteIds: Array.isArray(jwtPayload.siteIds)
+        ? (jwtPayload.siteIds as string[])
+        : undefined,
       permissions: Array.isArray(payload.permissions) ? payload.permissions : [],
     };
 

@@ -21,7 +21,7 @@ export class CameraController {
   createCamera = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const body = req.body as CreateCameraDto;
-      const result = await this.service.createCamera(body, req.user?.id);
+      const result = await this.service.createCamera(body, req.user?.id, req.user);
       res.status(201).json({
         success: true,
         data: result,
@@ -34,7 +34,7 @@ export class CameraController {
   findCameraById = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { id } = req.params;
-      const result = await this.service.findCameraById(id);
+      const result = await this.service.findCameraById(id, req.user);
       res.json({
         success: true,
         data: result,
@@ -47,7 +47,7 @@ export class CameraController {
   findAllCameras = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const query = req.query as unknown as CameraQueryDto;
-      const result = await this.service.findAllCameras(query);
+      const result = await this.service.findAllCameras(query, req.user);
       res.json({
         success: true,
         data: result.data,
@@ -62,7 +62,7 @@ export class CameraController {
     try {
       const { id } = req.params;
       const body = req.body as UpdateCameraDto;
-      const result = await this.service.updateCamera(id, body, req.user?.id);
+      const result = await this.service.updateCamera(id, body, req.user?.id, req.user);
       res.json({
         success: true,
         data: result,
@@ -75,7 +75,7 @@ export class CameraController {
   deleteCamera = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { id } = req.params;
-      const result = await this.service.deleteCamera(id, req.user?.id);
+      const result = await this.service.deleteCamera(id, req.user?.id, req.user);
       res.json({
         success: true,
         data: result,
@@ -89,7 +89,7 @@ export class CameraController {
   getCameraConfig = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { id } = req.params;
-      const result = await this.service.getCameraConfig(id);
+      const result = await this.service.getCameraConfig(id, req.user);
       res.json({
         success: true,
         data: result,
@@ -107,7 +107,7 @@ export class CameraController {
     try {
       const { id } = req.params;
       const body = req.body as UpdateCameraConfigDto;
-      const result = await this.service.updateCameraConfig(id, body);
+      const result = await this.service.updateCameraConfig(id, body, req.user?.id, req.user);
       res.json({
         success: true,
         data: result,
@@ -124,7 +124,7 @@ export class CameraController {
   ) => {
     try {
       const { id } = req.params;
-      const result = await this.service.clearCameraConfig(id);
+      const result = await this.service.clearCameraConfig(id, req.user?.id, req.user);
       res.json({
         success: true,
         data: result,
@@ -142,7 +142,7 @@ export class CameraController {
   ) => {
     try {
       const { id } = req.params;
-      const result = await this.service.findStreamsByCameraId(id);
+      const result = await this.service.findStreamsByCameraId(id, req.user);
       res.json({
         success: true,
         data: result,
@@ -160,7 +160,7 @@ export class CameraController {
     try {
       const { id } = req.params;
       const body = req.body as Omit<CreateCameraStreamDto, "cameraId">;
-      const result = await this.service.createCameraStream(id, body);
+      const result = await this.service.createCameraStream(id, body, req.user);
       res.status(201).json({
         success: true,
         data: result,
@@ -177,7 +177,7 @@ export class CameraController {
   ) => {
     try {
       const body = req.body as CreateCameraStreamDto;
-      const result = await this.service.createCameraStream(body.cameraId, body);
+      const result = await this.service.createCameraStream(body.cameraId, body, req.user);
       res.status(201).json({
         success: true,
         data: result,
@@ -243,7 +243,7 @@ export class CameraController {
   pingCamera = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { id } = req.params;
-      const result = await this.service.pingCamera(id);
+      const result = await this.service.pingCamera(id, req.user);
       res.json({
         success: true,
         data: result,
@@ -261,10 +261,13 @@ export class CameraController {
     try {
       const { id } = req.params;
       const query = req.query as unknown as CameraHealthLogQueryDto;
-      const result = await this.service.findHealthLogs({
-        ...query,
-        cameraId: id,
-      });
+      const result = await this.service.findHealthLogs(
+        {
+          ...query,
+          cameraId: id,
+        },
+        req.user,
+      );
       res.json({
         success: true,
         data: result.data,

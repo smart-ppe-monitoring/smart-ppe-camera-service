@@ -123,6 +123,8 @@ export class CameraRepository {
 
     if (query.siteId) {
       where.siteId = query.siteId;
+    } else if ((query as any).siteIds && Array.isArray((query as any).siteIds)) {
+      where.siteId = { in: (query as any).siteIds };
     }
 
     if (query.zoneId) {
@@ -307,7 +309,11 @@ export class CameraRepository {
     id: string,
     status: any,
     log: CreateCameraHealthLogDto,
+    retentionDays = 30,
   ) {
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
+
     return (this.db as any).$transaction(
       [
         (this.db as any).camera.update({
@@ -322,9 +328,30 @@ export class CameraRepository {
             errorMessage: log.errorMessage ?? null,
           },
         }),
+        // SEC-07: Auto-purge logs older than retentionDays (30 days) for this camera
+        (this.db as any).cameraHealthLog.deleteMany({
+          where: {
+            cameraId: log.cameraId,
+            checkedAt: { lt: cutoffDate },
+          },
+        }),
       ],
       DEFAULT_CAMERA_TRANSACTION_OPTIONS,
     );
+  }
+
+  /**
+   * SEC-07: Dọn dẹp các bản ghi nhật ký camera cũ hơn retentionDays (mặc định 30 ngày)
+   */
+  async purgeExpiredHealthLogs(retentionDays = 30): Promise<number> {
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
+    const result = await (this.db as any).cameraHealthLog.deleteMany({
+      where: {
+        checkedAt: { lt: cutoffDate },
+      },
+    });
+    return result.count ?? 0;
   }
 
   async createHealthLog(data: CreateCameraHealthLogDto) {
