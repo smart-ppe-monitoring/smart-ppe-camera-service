@@ -20,9 +20,13 @@ import { CameraService, maskStreamCredentials } from "../src/modules/camera/came
 import { CameraRepository } from "../src/modules/camera/camera.repository";
 import { AppError } from "../src/common/errors/app-error";
 import { ERROR_CODE } from "../src/common/errors/error-code";
-import { AUDIT_ACTION } from "../src/common/constants/audit-log.constant";
+import { AUDIT_ACTION, AUDIT_TARGET_TYPE } from "../src/common/constants/audit-log.constant";
+import { ROLES } from "../src/common/constants/role.constant";
 import { PERMISSIONS } from "../src/common/constants/permission.constant";
+import { isUuid } from "../src/common/helpers/uuid.helper";
 import cameraApp from "../src/camera.app";
+import fs from "node:fs";
+import path from "node:path";
 
 describe("Task BE-05: PPE Camera Management Service Suite", () => {
   // ── 1. Constants & Status Domain ───────────────────────────────────────────
@@ -896,6 +900,237 @@ describe("Task BE-05: PPE Camera Management Service Suite", () => {
       const res = await multiService.deleteCameraStream("stream-secondary");
       assert.equal(res.id, "stream-secondary");
       assert.equal(deletedStreamId, "stream-secondary");
+    });
+
+    it("SEC-26: createCameraStream, updateCameraStream, deleteCameraStream should record audit logs with masked stream credentials", async () => {
+      let recordedAuditLogs: any[] = [];
+      const mockAudit = {
+        recordLog: async (log: any) => {
+          recordedAuditLogs.push(log);
+        },
+      };
+
+      const mockRepo = {
+        findCameraById: async (id: string) => ({ id, name: "Site Cam", siteId: "site-1" }),
+        createCameraStream: async (data: any) => ({
+          id: "stream-sec26-new",
+          cameraId: data.cameraId,
+          protocol: data.protocol || "RTSP",
+          streamUrl: data.streamUrl,
+          resolution: "1920x1080",
+          fps: 25,
+        }),
+        findCameraStreamById: async (id: string) => ({
+          id,
+          cameraId: "cam-sec26",
+          camera: { id: "cam-sec26", siteId: "site-1" },
+          protocol: "RTSP",
+          streamUrl: "rtsp://admin:superSecretPass@192.168.1.50:554/stream1",
+        }),
+        updateCameraStream: async (id: string, data: any) => ({
+          id,
+          cameraId: "cam-sec26",
+          ...data,
+        }),
+        findStreamsByCameraId: async (cameraId: string) => [
+          { id: "stream-1", cameraId },
+          { id: "stream-2", cameraId },
+        ],
+        deleteCameraStream: async (id: string) => ({ id }),
+      } as unknown as CameraRepository;
+
+      const service = new CameraService(mockRepo, mockAudit);
+
+      // 1. Create camera stream
+      await service.createCameraStream(
+        "cam-sec26",
+        {
+          protocol: STREAM_PROTOCOL.RTSP,
+          streamUrl: "rtsp://admin:secretPassword123@192.168.1.100:554/live",
+          resolution: "1920x1080",
+          fps: 25,
+        },
+        "user-actor-1",
+      );
+
+      assert.equal(recordedAuditLogs.length, 1);
+      assert.equal(recordedAuditLogs[0].action, AUDIT_ACTION.CREATE_PPE_CAMERA_STREAM);
+      assert.equal(recordedAuditLogs[0].targetType, AUDIT_TARGET_TYPE.PPE_CAMERA_STREAM);
+      assert.equal(recordedAuditLogs[0].targetId, "stream-sec26-new");
+      assert.equal(recordedAuditLogs[0].actorId, "user-actor-1");
+      // Credentials must be masked in audit log
+      assert.ok(recordedAuditLogs[0].details.streamUrl.includes(":***@"));
+      assert.ok(!recordedAuditLogs[0].details.streamUrl.includes("secretPassword123"));
+
+      // 2. Update camera stream
+      await service.updateCameraStream(
+        "stream-sec26-new",
+        {
+          streamUrl: "rtsp://operator:anotherPassword@192.168.1.101:554/live",
+          fps: 15,
+        },
+        "user-actor-2",
+      );
+
+      assert.equal(recordedAuditLogs.length, 2);
+      assert.equal(recordedAuditLogs[1].action, AUDIT_ACTION.UPDATE_PPE_CAMERA_STREAM);
+      assert.equal(recordedAuditLogs[1].targetType, AUDIT_TARGET_TYPE.PPE_CAMERA_STREAM);
+      assert.equal(recordedAuditLogs[1].targetId, "stream-sec26-new");
+      assert.equal(recordedAuditLogs[1].actorId, "user-actor-2");
+      assert.ok(recordedAuditLogs[1].details.streamUrl.includes(":***@"));
+      assert.ok(!recordedAuditLogs[1].details.streamUrl.includes("anotherPassword"));
+
+      // 3. Delete camera stream
+      await service.deleteCameraStream("stream-sec26-new", "user-actor-3");
+      assert.equal(recordedAuditLogs.length, 3);
+      assert.equal(recordedAuditLogs[2].action, AUDIT_ACTION.DELETE_PPE_CAMERA_STREAM);
+      assert.equal(recordedAuditLogs[2].targetType, AUDIT_TARGET_TYPE.PPE_CAMERA_STREAM);
+      assert.equal(recordedAuditLogs[2].targetId, "stream-sec26-new");
+      assert.equal(recordedAuditLogs[2].actorId, "user-actor-3");
+      assert.ok(recordedAuditLogs[2].details.streamUrl.includes(":***@"));
+      assert.ok(!recordedAuditLogs[2].details.streamUrl.includes("superSecretPass"));
+    });
+
+    it("SEC-27: stream endpoints should enforce site scoping (BOLA protection) for non-admin users", async () => {
+      const mockRepo = {
+        findCameraById: async (id: string) => ({ id, name: "Cam Site A", siteId: "site-a" }),
+        findCameraStreamById: async (id: string) => ({
+          id,
+          cameraId: "cam-site-a",
+          camera: { id: "cam-site-a", siteId: "site-a" },
+        }),
+        createCameraStream: async (data: any) => ({ id: "new-stream", ...data }),
+        updateCameraStream: async (id: string, data: any) => ({ id, ...data }),
+        findStreamsByCameraId: async (cameraId: string) => [
+          { id: "stream-1", cameraId },
+          { id: "stream-2", cameraId },
+        ],
+        deleteCameraStream: async (id: string) => ({ id }),
+      } as unknown as CameraRepository;
+
+      const service = new CameraService(mockRepo);
+
+      const userFromSiteB = { id: "user-b", role: "OPERATOR", siteId: "site-b" };
+      const userFromSiteA = { id: "user-a", role: "OPERATOR", siteId: "site-a" };
+      const adminUser = { id: "admin-1", role: ROLES.ADMIN };
+
+      // 1. findCameraStreamById: user from Site B should be rejected
+      await assert.rejects(
+        async () => {
+          await service.findCameraStreamById("stream-site-a", userFromSiteB);
+        },
+        (err: any) => {
+          assert.ok(err instanceof AppError);
+          assert.equal(err.statusCode, 403);
+          assert.equal(err.code, ERROR_CODE.FORBIDDEN);
+          return true;
+        },
+      );
+
+      // User from Site A and Admin should succeed
+      const allowedSiteA = await service.findCameraStreamById("stream-site-a", userFromSiteA);
+      assert.equal(allowedSiteA.id, "stream-site-a");
+
+      const allowedAdmin = await service.findCameraStreamById("stream-site-a", adminUser);
+      assert.equal(allowedAdmin.id, "stream-site-a");
+
+      // 2. updateCameraStream: user from Site B should be rejected
+      await assert.rejects(
+        async () => {
+          await service.updateCameraStream("stream-site-a", { fps: 20 }, "user-b", userFromSiteB);
+        },
+        (err: any) => {
+          assert.ok(err instanceof AppError);
+          assert.equal(err.statusCode, 403);
+          assert.equal(err.code, ERROR_CODE.FORBIDDEN);
+          return true;
+        },
+      );
+
+      // 3. deleteCameraStream: user from Site B should be rejected
+      await assert.rejects(
+        async () => {
+          await service.deleteCameraStream("stream-site-a", "user-b", userFromSiteB);
+        },
+        (err: any) => {
+          assert.ok(err instanceof AppError);
+          assert.equal(err.statusCode, 403);
+          assert.equal(err.code, ERROR_CODE.FORBIDDEN);
+          return true;
+        },
+      );
+
+      // 4. createCameraStream: user from Site B trying to add stream to Site A camera should be rejected
+      await assert.rejects(
+        async () => {
+          await service.createCameraStream("cam-site-a", {
+            protocol: STREAM_PROTOCOL.RTSP,
+            streamUrl: "rtsp://192.168.1.200/live",
+          }, "user-b", userFromSiteB);
+        },
+        (err: any) => {
+          assert.ok(err instanceof AppError);
+          assert.equal(err.statusCode, 403);
+          assert.equal(err.code, ERROR_CODE.FORBIDDEN);
+          return true;
+        },
+      );
+    });
+
+    it("SEC-28: migration.sql should define uuid_generate_v7 and CameraRepository should create records with UUIDv7", async () => {
+      // 1. Verify migration.sql definition
+      const migrationPath = path.resolve(__dirname, "../prisma/migrations/20261008170828_init_camera/migration.sql");
+      const migrationSql = fs.readFileSync(migrationPath, "utf-8");
+      assert.ok(migrationSql.includes('CREATE EXTENSION IF NOT EXISTS "pgcrypto"'), "migration.sql must create pgcrypto extension");
+      assert.ok(migrationSql.includes("CREATE OR REPLACE FUNCTION uuid_generate_v7()"), "migration.sql must define uuid_generate_v7() function");
+
+      // 2. Verify CameraRepository generates explicit UUIDv7 on entity creation
+      let createdRecords: any[] = [];
+      const mockDb = {
+        $transaction: async (fn: any) => {
+          const tx = {
+            camera: {
+              create: async (args: any) => {
+                createdRecords.push({ type: "camera", ...args.data });
+                return { ...args.data };
+              },
+            },
+            cameraConfig: {
+              create: async (args: any) => {
+                createdRecords.push({ type: "config", ...args.data });
+                return { ...args.data };
+              },
+            },
+            cameraStream: {
+              create: async (args: any) => {
+                createdRecords.push({ type: "stream", ...args.data });
+                return { ...args.data };
+              },
+            },
+          };
+          return fn(tx);
+        },
+        cameraStream: {
+          create: async (args: any) => {
+            createdRecords.push({ type: "direct_stream", ...args.data });
+            return { ...args.data };
+          },
+        },
+      };
+
+      const repo = new CameraRepository(mockDb as any);
+      await repo.createCamera({
+        siteId: "site-1",
+        name: "Test Cam",
+        code: "CAM-UUID7",
+        streamUrl: "rtsp://192.168.1.100/live",
+      });
+
+      assert.equal(createdRecords.length, 3);
+      for (const rec of createdRecords) {
+        assert.ok(rec.id, `Record ${rec.type} must have an explicit id`);
+        assert.ok(isUuid(rec.id), `Record ${rec.type} id must match UUID format: ${rec.id}`);
+      }
     });
   });
 });

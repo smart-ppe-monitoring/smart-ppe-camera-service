@@ -160,7 +160,12 @@ export class CameraController {
     try {
       const { id } = req.params;
       const body = req.body as Omit<CreateCameraStreamDto, "cameraId">;
-      const result = await this.service.createCameraStream(id, body, req.user);
+      const result = await this.service.createCameraStream(
+        id,
+        body,
+        req.user?.id,
+        req.user,
+      );
       res.status(201).json({
         success: true,
         data: result,
@@ -177,7 +182,12 @@ export class CameraController {
   ) => {
     try {
       const body = req.body as CreateCameraStreamDto;
-      const result = await this.service.createCameraStream(body.cameraId, body, req.user);
+      const result = await this.service.createCameraStream(
+        body.cameraId,
+        body,
+        req.user?.id,
+        req.user,
+      );
       res.status(201).json({
         success: true,
         data: result,

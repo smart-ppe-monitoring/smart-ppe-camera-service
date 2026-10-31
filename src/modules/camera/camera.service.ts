@@ -400,13 +400,40 @@ export class CameraService {
   async createCameraStream(
     cameraId: string,
     data: Omit<CreateCameraStreamDto, "cameraId">,
+    actorIdOrContext?: string | UserContext,
     userContext?: UserContext,
   ) {
-    await this.findCameraById(cameraId, userContext);
+    let actorId: string | undefined;
+    let actualUserContext = userContext;
+
+    if (typeof actorIdOrContext === "object") {
+      actualUserContext = actorIdOrContext;
+      actorId = actualUserContext?.id;
+    } else {
+      actorId = actorIdOrContext;
+    }
+
+    await this.findCameraById(cameraId, actualUserContext);
     const createdStream = await this.repository.createCameraStream({
       ...data,
       cameraId,
     });
+
+    // SEC-26: Bổ sung audit log bắt buộc khi tạo mới camera stream
+    await this.audit?.recordLog({
+      actorId,
+      action: AUDIT_ACTION.CREATE_PPE_CAMERA_STREAM,
+      targetType: AUDIT_TARGET_TYPE.PPE_CAMERA_STREAM,
+      targetId: createdStream.id,
+      details: {
+        cameraId,
+        protocol: createdStream.protocol,
+        streamUrl: maskStreamCredentials(createdStream.streamUrl),
+        resolution: createdStream.resolution,
+        fps: createdStream.fps,
+      },
+    });
+
     return sanitizeStreamEntity(createdStream);
   }
 
@@ -425,8 +452,15 @@ export class CameraService {
         ERROR_CODE.NOT_FOUND,
       );
     }
-    if (stream.camera?.siteId) {
-      this.assertSiteAccess(stream.camera.siteId, userContext);
+    // SEC-27: Kiểm tra phân quyền theo siteId bảo vệ BOLA trên endpoint trực tiếp camera-streams
+    const siteId = stream.camera?.siteId;
+    if (siteId) {
+      this.assertSiteAccess(siteId, userContext);
+    } else if (stream.cameraId) {
+      const camera = await this.repository.findCameraById(stream.cameraId);
+      if (camera?.siteId) {
+        this.assertSiteAccess(camera.siteId, userContext);
+      }
     }
     return sanitizeStreamEntity(stream);
   }
@@ -437,8 +471,26 @@ export class CameraService {
     actorId?: string,
     userContext?: UserContext,
   ) {
-    await this.findCameraStreamById(id, userContext);
+    const existing = await this.findCameraStreamById(id, userContext);
     const updated = await this.repository.updateCameraStream(id, data);
+
+    // SEC-26: Bổ sung audit log bắt buộc khi cập nhật cấu hình stream
+    const maskedDetails: Record<string, any> = { ...data };
+    if (maskedDetails.streamUrl) {
+      maskedDetails.streamUrl = maskStreamCredentials(maskedDetails.streamUrl);
+    }
+
+    await this.audit?.recordLog({
+      actorId,
+      action: AUDIT_ACTION.UPDATE_PPE_CAMERA_STREAM,
+      targetType: AUDIT_TARGET_TYPE.PPE_CAMERA_STREAM,
+      targetId: id,
+      details: {
+        cameraId: existing.cameraId || existing.camera?.id,
+        ...maskedDetails,
+      },
+    });
+
     return sanitizeStreamEntity(updated);
   }
 
@@ -461,7 +513,22 @@ export class CameraService {
       );
     }
 
-    return this.repository.deleteCameraStream(id);
+    const deleted = await this.repository.deleteCameraStream(id);
+
+    // SEC-26: Bổ sung audit log bắt buộc khi xóa sub-stream
+    await this.audit?.recordLog({
+      actorId,
+      action: AUDIT_ACTION.DELETE_PPE_CAMERA_STREAM,
+      targetType: AUDIT_TARGET_TYPE.PPE_CAMERA_STREAM,
+      targetId: id,
+      details: {
+        cameraId: stream.cameraId || stream.camera?.id,
+        protocol: stream.protocol,
+        streamUrl: maskStreamCredentials(stream.streamUrl),
+      },
+    });
+
+    return deleted;
   }
 
   // ── Health Probe & Ping Operations ─────────────────────────────────────────

@@ -6,6 +6,7 @@ import {
   calculatePaginationSkip,
   formatPaginationMeta,
 } from "../../common/helpers/pagination.helper";
+import { generateId } from "../../common/helpers/uuid.helper";
 import {
   CreateCameraDto,
   UpdateCameraDto,
@@ -38,6 +39,7 @@ export class CameraRepository {
       async (tx: any) => {
         const camera = await tx.camera.create({
           data: {
+            id: generateId(),
             siteId: data.siteId,
             zoneId: data.zoneId || null,
             name: data.name,
@@ -53,6 +55,7 @@ export class CameraRepository {
         // Tự động khởi tạo CameraConfig mặc định
         const config = await tx.cameraConfig.create({
           data: {
+            id: generateId(),
             cameraId: camera.id,
             enabled: DEFAULT_CAMERA_CONFIG.enabled,
             captureFps: DEFAULT_CAMERA_CONFIG.captureFps,
@@ -69,6 +72,7 @@ export class CameraRepository {
 
         const stream = await tx.cameraStream.create({
           data: {
+            id: generateId(),
             cameraId: camera.id,
             protocol: defaultProtocol,
             streamUrl: data.streamUrl,
@@ -235,6 +239,7 @@ export class CameraRepository {
     return (this.db as any).cameraConfig.upsert({
       where: { cameraId },
       create: {
+        id: generateId(),
         cameraId,
         enabled:
           data.enabled !== undefined
@@ -255,6 +260,7 @@ export class CameraRepository {
   async createCameraStream(data: CreateCameraStreamDto) {
     return (this.db as any).cameraStream.create({
       data: {
+        id: generateId(),
         cameraId: data.cameraId,
         protocol: data.protocol || STREAM_PROTOCOL.RTSP,
         streamUrl: data.streamUrl,
@@ -319,6 +325,7 @@ export class CameraRepository {
         }),
         (this.db as any).cameraHealthLog.create({
           data: {
+            id: generateId(),
             cameraId: log.cameraId,
             status: log.status,
             latencyMs: log.latencyMs ?? null,
@@ -354,6 +361,7 @@ export class CameraRepository {
   async createHealthLog(data: CreateCameraHealthLogDto) {
     return (this.db as any).cameraHealthLog.create({
       data: {
+        id: generateId(),
         cameraId: data.cameraId,
         status: data.status,
         latencyMs: data.latencyMs ?? null,
