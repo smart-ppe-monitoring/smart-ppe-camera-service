@@ -24,7 +24,9 @@ import { AUDIT_ACTION, AUDIT_TARGET_TYPE } from "../src/common/constants/audit-l
 import { ROLES } from "../src/common/constants/role.constant";
 import { PERMISSIONS } from "../src/common/constants/permission.constant";
 import { isUuid } from "../src/common/helpers/uuid.helper";
-import cameraApp from "../src/camera.app";
+import cameraApp, { checkDatabaseHealth, DB_HEALTH_CACHE_TTL_MS } from "../src/camera.app";
+import { parseTrustProxy } from "../src/config/env.config";
+import { requireGatewayOrigin } from "../src/middlewares/request-id.middleware";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -1131,6 +1133,112 @@ describe("Task BE-05: PPE Camera Management Service Suite", () => {
         assert.ok(rec.id, `Record ${rec.type} must have an explicit id`);
         assert.ok(isUuid(rec.id), `Record ${rec.type} id must match UUID format: ${rec.id}`);
       }
+    });
+
+    it("SEC-09: parseTrustProxy should resolve 'true' to 1 hop to prevent client IP spoofing", () => {
+      // SEC-09: 'true' must map to 1 hop (Traefik gateway) instead of boolean true
+      assert.equal(parseTrustProxy("true"), 1);
+      assert.equal(parseTrustProxy("false"), false);
+      assert.equal(parseTrustProxy("2"), 2);
+      assert.deepEqual(parseTrustProxy("10.0.0.1, 10.0.0.2"), ["10.0.0.1", "10.0.0.2"]);
+    });
+
+    it("SEC-10: requireGatewayOrigin should be mounted on Express routes and reject direct access", async () => {
+      // 1. Verify requireGatewayOrigin is registered in cameraApp middleware stacks
+      const hasGatewayOrigin = (cameraApp._router?.stack || []).some(
+        (layer: any) =>
+          layer.name === "requireGatewayOrigin" ||
+          layer.handle?.name === "requireGatewayOrigin",
+      );
+      assert.ok(hasGatewayOrigin, "cameraApp routes must mount requireGatewayOrigin");
+
+      // 2. Direct unit test of requireGatewayOrigin
+      const { createRequireGatewayOrigin } = await import("../src/middlewares/request-id.middleware");
+      const testOriginGuard = createRequireGatewayOrigin("test-secret-123");
+
+      let nextError: any = null;
+      testOriginGuard(
+        { headers: {} } as any,
+        {} as any,
+        ((err?: any) => { nextError = err; }) as any,
+      );
+      assert.ok(nextError instanceof AppError);
+      assert.equal(nextError.statusCode, 403);
+      assert.equal(nextError.code, ERROR_CODE.GATEWAY_REQUIRED);
+
+      // Valid gateway secret passes
+      let passed = false;
+      testOriginGuard(
+        { headers: { "x-gateway-secret": "test-secret-123" } } as any,
+        {} as any,
+        ((err?: any) => { if (!err) passed = true; }) as any,
+      );
+      assert.ok(passed, "Valid gateway secret must pass origin guard");
+    });
+
+    it("SEC-11: checkDatabaseHealth should cache database status for 5 seconds to prevent DB starvation", async () => {
+      assert.equal(DB_HEALTH_CACHE_TTL_MS, 5000);
+
+      // First call computes or uses cache
+      const firstCheck = await checkDatabaseHealth();
+      assert.equal(typeof firstCheck, "boolean");
+
+      // Rapid consecutive call should reuse the cache immediately
+      const secondCheck = await checkDatabaseHealth();
+      assert.equal(secondCheck, firstCheck);
+    });
+
+    it("SEC-12: deleteCamera should perform soft delete with deletedAt and filter soft-deleted cameras in queries", async () => {
+      // 1. Verify migration file for soft-delete exists
+      const migrationDir = path.resolve(__dirname, "../prisma/migrations/20261011120000_add_camera_deleted_at");
+      const migrationFile = path.join(migrationDir, "migration.sql");
+      assert.ok(fs.existsSync(migrationFile), "Migration file for camera soft-delete must exist");
+      const migrationSql = fs.readFileSync(migrationFile, "utf-8");
+      assert.ok(migrationSql.includes('ALTER TABLE "cameras" ADD COLUMN IF NOT EXISTS "deleted_at"'));
+      assert.ok(migrationSql.includes('CREATE INDEX IF NOT EXISTS "cameras_deleted_at_idx"'));
+
+      // 2. Verify repository deleteCamera performs update instead of delete
+      let updateArgs: any = null;
+      let findFirstArgs: any = null;
+      let findManyArgs: any = null;
+
+      const mockDb = {
+        camera: {
+          update: async (args: any) => {
+            updateArgs = args;
+            return { id: args.where.id, status: args.data.status, deletedAt: args.data.deletedAt };
+          },
+          findFirst: async (args: any) => {
+            findFirstArgs = args;
+            return { id: args.where.id, name: "Active Cam" };
+          },
+          findMany: async (args: any) => {
+            findManyArgs = args;
+            return [];
+          },
+          count: async () => 0,
+        },
+      };
+
+      const repo = new CameraRepository(mockDb as any);
+
+      // Soft delete
+      await repo.deleteCamera("cam-soft-del-1");
+      assert.ok(updateArgs);
+      assert.equal(updateArgs.where.id, "cam-soft-del-1");
+      assert.ok(updateArgs.data.deletedAt instanceof Date);
+      assert.equal(updateArgs.data.status, CAMERA_STATUS.OFFLINE);
+
+      // Query single camera filters deletedAt: null
+      await repo.findCameraById("cam-active-1");
+      assert.ok(findFirstArgs);
+      assert.equal(findFirstArgs.where.id, "cam-active-1");
+      assert.equal(findFirstArgs.where.deletedAt, null);
+
+      // Query list filters deletedAt: null
+      await repo.findAllCameras({ page: 1, limit: 10 });
+      assert.ok(findManyArgs);
+      assert.equal(findManyArgs.where.deletedAt, null);
     });
   });
 });

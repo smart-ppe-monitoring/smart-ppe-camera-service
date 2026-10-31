@@ -93,8 +93,8 @@ export class CameraRepository {
   }
 
   async findCameraById(id: string) {
-    return (this.db as any).camera.findUnique({
-      where: { id },
+    return (this.db as any).camera.findFirst({
+      where: { id, deletedAt: null },
       include: {
         config: true,
         streams: true,
@@ -106,8 +106,8 @@ export class CameraRepository {
   }
 
   async findCameraByCode(code: string) {
-    return (this.db as any).camera.findUnique({
-      where: { code: code.toUpperCase() },
+    return (this.db as any).camera.findFirst({
+      where: { code: code.toUpperCase(), deletedAt: null },
       include: {
         config: true,
         streams: true,
@@ -123,7 +123,10 @@ export class CameraRepository {
     const { skip, take, page: safePage, limit: safeLimit } =
       calculatePaginationSkip(page, limit);
 
-    const where: any = {};
+    // SEC-12: Mặc định lọc bỏ các camera đã bị xóa mềm (deletedAt !== null)
+    const where: any = {
+      deletedAt: null,
+    };
 
     if (query.siteId) {
       where.siteId = query.siteId;
@@ -220,8 +223,14 @@ export class CameraRepository {
   }
 
   async deleteCamera(id: string) {
-    return (this.db as any).camera.delete({
+    // SEC-12: Chuyển sang soft delete, lưu giữ deletedAt và chuyển status sang OFFLINE
+    // để bảo toàn toàn bộ camera_streams, camera_configs và camera_health_logs cho lưu vết pháp lý và audit
+    return (this.db as any).camera.update({
       where: { id },
+      data: {
+        deletedAt: new Date(),
+        status: CAMERA_STATUS.OFFLINE,
+      },
     });
   }
 

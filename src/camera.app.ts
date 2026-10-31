@@ -12,7 +12,10 @@ import {
   cameraStreamRouter,
 } from "./modules/camera/camera.route";
 import { rateLimitMiddleware } from "./middlewares/rate-limit.middleware";
-import { requestIdMiddleware } from "./middlewares/request-id.middleware";
+import {
+  requestIdMiddleware,
+  requireGatewayOrigin,
+} from "./middlewares/request-id.middleware";
 import { maintenanceGuard } from "./middlewares/maintenance.middleware";
 import { envConfig } from "./config/env.config";
 import { cameraPrisma } from "./database/camera.client";
@@ -88,14 +91,28 @@ cameraApp.use(express.urlencoded({ extended: true, limit: "2mb" }));
 cameraApp.use(cookieParser());
 
 // 3. Health check endpoints cho Traefik Gateway & Monitoring
-const healthHandler = async (_req: express.Request, res: express.Response) => {
-  let isHealthy = false;
+// SEC-11: Cache database health check result for 5 seconds to prevent DB connection pool starvation
+let lastDbCheckTime = 0;
+let cachedDbHealthy = false;
+export const DB_HEALTH_CACHE_TTL_MS = 5000;
+
+export async function checkDatabaseHealth(force = false): Promise<boolean> {
+  const now = Date.now();
+  if (!force && now - lastDbCheckTime < DB_HEALTH_CACHE_TTL_MS) {
+    return cachedDbHealthy;
+  }
   try {
     await cameraPrisma.$queryRaw`SELECT 1`;
-    isHealthy = true;
+    cachedDbHealthy = true;
   } catch {
-    isHealthy = false;
+    cachedDbHealthy = false;
   }
+  lastDbCheckTime = now;
+  return cachedDbHealthy;
+}
+
+const healthHandler = async (_req: express.Request, res: express.Response) => {
+  const isHealthy = await checkDatabaseHealth();
   const dbStatus = isHealthy ? "up" : "down";
 
   res.status(isHealthy ? 200 : 503).json({
@@ -122,22 +139,32 @@ if (envConfig.nodeEnv !== "production") {
 
 // 4. Mount Camera & Stream Routes
 // Hỗ trợ dual-mount cả prefix /api/v1/cameras và /cameras khi qua Gateway hoặc gọi trực tiếp
+// SEC-10: Mount requireGatewayOrigin để ngăn chặn truy cập trực tiếp bypass API Gateway
 cameraApp.use(
   "/api/v1/cameras",
+  requireGatewayOrigin,
   rateLimitMiddleware,
   maintenanceGuard(),
   cameraRouter,
 );
-cameraApp.use("/cameras", rateLimitMiddleware, maintenanceGuard(), cameraRouter);
+cameraApp.use(
+  "/cameras",
+  requireGatewayOrigin,
+  rateLimitMiddleware,
+  maintenanceGuard(),
+  cameraRouter,
+);
 
 cameraApp.use(
   "/api/v1/camera-streams",
+  requireGatewayOrigin,
   rateLimitMiddleware,
   maintenanceGuard(),
   cameraStreamRouter,
 );
 cameraApp.use(
   "/camera-streams",
+  requireGatewayOrigin,
   rateLimitMiddleware,
   maintenanceGuard(),
   cameraStreamRouter,
