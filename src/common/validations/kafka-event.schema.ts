@@ -178,6 +178,46 @@ export const ppeSiteAlertTriggeredKafkaEventSchema = z.object({
 });
 
 /**
+ * ── 5. Schema sự kiện: ppe.site.deleted ───────────────────────────────────────
+ * SEC-24: Phát ra bởi smart-ppe-site-service khi một công trường bị xóa.
+ * Camera service lắng nghe để soft-delete toàn bộ camera thuộc site này.
+ */
+export const ppeSiteDeletedPayloadSchema = z.object({
+  siteId: z.string().uuid().describe("UUIDv7 công trường bị xóa"),
+  deletedAt: z.string().optional().describe("Thời điểm xóa theo ISO 8601"),
+  reason: z.string().optional().describe("Lý do xóa"),
+});
+
+export const ppeSiteDeletedKafkaEventSchema = z.object({
+  eventId: z.string().uuid().describe("UUIDv7 định danh sự kiện"),
+  topic: z.literal(KAFKA_TOPICS.PPE_SITE_DELETED),
+  traceId: z.string().min(1).optional(),
+  timestamp: z.number().int().positive().optional(),
+  producer: z.string().min(1).default("ppe-site-service"),
+  payload: ppeSiteDeletedPayloadSchema,
+});
+
+/**
+ * ── 6. Schema sự kiện: ppe.zone.deleted ───────────────────────────────────────
+ * SEC-24: Phát ra bởi smart-ppe-site-service khi một khu vực (zone) bị xóa.
+ * Camera service lắng nghe để unassign zoneId khỏi toàn bộ camera trong zone.
+ */
+export const ppeZoneDeletedPayloadSchema = z.object({
+  zoneId: z.string().uuid().describe("UUIDv7 khu vực bị xóa"),
+  siteId: z.string().uuid().optional().describe("UUIDv7 công trường"),
+  deletedAt: z.string().optional(),
+});
+
+export const ppeZoneDeletedKafkaEventSchema = z.object({
+  eventId: z.string().uuid(),
+  topic: z.literal(KAFKA_TOPICS.PPE_ZONE_DELETED),
+  traceId: z.string().min(1).optional(),
+  timestamp: z.number().int().positive().optional(),
+  producer: z.string().min(1).default("ppe-site-service"),
+  payload: ppeZoneDeletedPayloadSchema,
+});
+
+/**
  * Helper hàm kiểm tra và phân tích cú pháp Kafka Message an toàn
  * Nếu payload sai định dạng, trả về lỗi chi tiết để đưa vào Dead-Letter Queue
  */

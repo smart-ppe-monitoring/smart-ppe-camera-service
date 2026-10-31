@@ -21,6 +21,7 @@ import { envConfig } from "./config/env.config";
 import { cameraPrisma } from "./database/camera.client";
 import { buildOpenApiSpec } from "./config/openapi/openapi.registry";
 import { registerCameraOpenApi } from "./modules/camera/camera.openapi";
+import { defaultCameraEventConsumer } from "./modules/camera/camera.consumer";
 
 // Khởi tạo các định nghĩa OpenAPI
 registerCameraOpenApi();
@@ -174,4 +175,8 @@ cameraApp.use(
 cameraApp.use(notFoundMiddleware);
 cameraApp.use(errorMiddleware);
 
+// SEC-24: Đăng ký Kafka Event Consumer vào app locals cho distributed lifecycle management
+cameraApp.locals.cameraEventConsumer = defaultCameraEventConsumer;
+
+export { defaultCameraEventConsumer };
 export default cameraApp;

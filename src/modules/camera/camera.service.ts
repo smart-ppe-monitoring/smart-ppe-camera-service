@@ -367,6 +367,75 @@ export class CameraService {
     return deleted;
   }
 
+  /**
+   * SEC-24: Xử lý sự kiện SITE_DELETED từ smart-ppe-site-service qua Kafka / EventBus.
+   * Tự động cascade soft-delete toàn bộ camera gắn với công trường này để tránh orphaned records.
+   */
+  async handleSiteDeleted(
+    payload: { siteId: string; reason?: string },
+    actorId = "SYSTEM",
+  ): Promise<{ affectedCount: number }> {
+    if (!payload?.siteId) {
+      throw new AppError(
+        "siteId is required for handleSiteDeleted",
+        400,
+        ERROR_CODE.VALIDATION_ERROR,
+      );
+    }
+
+    const affectedCount = await this.repository.softDeleteCamerasBySiteId(
+      payload.siteId,
+    );
+
+    await this.audit?.recordLog({
+      actorId,
+      action: AUDIT_ACTION.DELETE_PPE_CAMERA,
+      targetType: AUDIT_TARGET_TYPE.PPE_SITE,
+      targetId: payload.siteId,
+      details: {
+        event: "SITE_DELETED_CASCADE_CLEANUP",
+        affectedCamerasCount: affectedCount,
+        reason: payload.reason,
+      },
+    });
+
+    return { affectedCount };
+  }
+
+  /**
+   * SEC-24: Xử lý sự kiện ZONE_DELETED từ smart-ppe-site-service qua Kafka / EventBus.
+   * Gỡ bỏ zoneId (unassign) khỏi toàn bộ camera trong khu vực bị xóa.
+   */
+  async handleZoneDeleted(
+    payload: { zoneId: string },
+    actorId = "SYSTEM",
+  ): Promise<{ affectedCount: number }> {
+    if (!payload?.zoneId) {
+      throw new AppError(
+        "zoneId is required for handleZoneDeleted",
+        400,
+        ERROR_CODE.VALIDATION_ERROR,
+      );
+    }
+
+    const affectedCount = await this.repository.unassignCamerasByZoneId(
+      payload.zoneId,
+    );
+
+    await this.audit?.recordLog({
+      actorId,
+      action: AUDIT_ACTION.UPDATE_PPE_CAMERA,
+      targetType: AUDIT_TARGET_TYPE.PPE_CAMERA,
+      targetId: payload.zoneId,
+      details: {
+        event: "ZONE_DELETED_UNASSIGN_CAMERAS",
+        unassignedCamerasCount: affectedCount,
+      },
+    });
+
+    return { affectedCount };
+  }
+
   // ── Camera Config Operations ───────────────────────────────────────────────
   async getCameraConfig(cameraId: string, userContext?: UserContext) {
     await this.findCameraById(cameraId, userContext);

@@ -37,6 +37,16 @@ import {
   authMiddleware,
 } from "../src/middlewares/auth.middleware";
 import { maintenanceGuard } from "../src/middlewares/maintenance.middleware";
+import { encryptSecret, decryptSecret } from "../src/common/helpers/crypto.helper";
+import {
+  KAFKA_TOPICS,
+  KAFKA_CONSUMER_GROUPS,
+} from "../src/common/constants/kafka.constant";
+import { BROKER_CONSUMER_GROUPS } from "../src/common/constants/broker.constant";
+import {
+  CameraEventConsumer,
+  defaultCameraEventConsumer,
+} from "../src/modules/camera/camera.consumer";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -1406,6 +1416,136 @@ describe("Task BE-05: PPE Camera Management Service Suite", () => {
         ((err?: any) => { if (!err) normalPassed = true; }) as any,
       );
       assert.equal(normalPassed, true, "Inactive maintenance must allow regular requests");
+    });
+
+    it("SEC-23: crypto.helper should reject missing master encryption key and roundtrip with secure key", () => {
+      // 1. Encryption and Decryption roundtrip with a valid custom 32+ character key
+      const testSecret = "rtsp://super-secret-user:super-secret-password@192.168.1.100:554/live";
+      const customKey = "a-very-secure-32-byte-master-key-abcdef123456";
+      const encrypted = encryptSecret(testSecret, customKey);
+      assert.ok(encrypted.includes(":"), "Encrypted text must be in iv:authTag:cipher format");
+      const decrypted = decryptSecret(encrypted, customKey);
+      assert.equal(decrypted, testSecret, "Decrypted text must match original plain text");
+
+      // 2. Encrypting with a bad custom key or when no key is available throws error
+      assert.throws(
+        () => encryptSecret(testSecret, "   "),
+        /Master encryption key is not configured|at least 32 characters/i,
+      );
+
+      // 3. Decrypting with wrong key fails auth tag verification
+      assert.throws(
+        () => decryptSecret(encrypted, "wrong-key-with-different-entropy-123456789"),
+        /Unsupported state or unable to authenticate data|Invalid/i,
+      );
+    });
+
+    it("SEC-24: CameraEventConsumer, CameraService and CameraRepository should cascade soft-delete and unassign on SITE_DELETED and ZONE_DELETED", async () => {
+      // 1. Kafka topics and consumer groups are correctly configured
+      assert.equal(KAFKA_TOPICS.PPE_SITE_DELETED, "ppe.site.deleted");
+      assert.equal(KAFKA_TOPICS.PPE_ZONE_DELETED, "ppe.zone.deleted");
+      assert.equal(KAFKA_CONSUMER_GROUPS.CAMERA_SERVICE, "ppe-camera-consumer-group");
+      assert.equal(BROKER_CONSUMER_GROUPS.CAMERA_SERVICE, "ppe-camera-consumer-group");
+
+      // 2. CameraRepository soft-deletes cameras by siteId
+      let updatedSiteWhere: any = null;
+      let updatedSiteData: any = null;
+      let updatedZoneWhere: any = null;
+      let updatedZoneData: any = null;
+
+      const mockDb: any = {
+        camera: {
+          updateMany: async (args: any) => {
+            if (args.where.siteId) {
+              updatedSiteWhere = args.where;
+              updatedSiteData = args.data;
+              return { count: 3 };
+            }
+            if (args.where.zoneId) {
+              updatedZoneWhere = args.where;
+              updatedZoneData = args.data;
+              return { count: 2 };
+            }
+            return { count: 0 };
+          },
+        },
+      };
+
+      const auditLogs: any[] = [];
+      const mockAuditLogger: any = {
+        recordLog: async (log: any) => { auditLogs.push(log); },
+      };
+
+      const repo = new CameraRepository(mockDb);
+      const service = new CameraService(repo, mockAuditLogger);
+      const consumer = new CameraEventConsumer(service);
+
+      const targetSiteId = "018f28a3-9b81-7000-8000-111111111111";
+      const targetZoneId = "018f28a3-9b81-7000-8000-222222222222";
+
+      // 3. Process SITE_DELETED event via consumer
+      const siteDeletedEvent = {
+        eventId: "018f28a3-9b81-7000-8000-333333333333",
+        topic: KAFKA_TOPICS.PPE_SITE_DELETED,
+        traceId: "req-trace-site-del-01",
+        timestamp: Date.now(),
+        producer: "ppe-site-service",
+        payload: {
+          siteId: targetSiteId,
+          deletedAt: new Date().toISOString(),
+          reason: "Project site decommissioned",
+        },
+      };
+
+      const siteResult = await consumer.dispatchMessage(
+        KAFKA_TOPICS.PPE_SITE_DELETED,
+        siteDeletedEvent,
+      );
+      assert.equal(siteResult.success, true);
+      assert.equal(siteResult.affectedCount, 3);
+      assert.equal(updatedSiteWhere.siteId, targetSiteId);
+      assert.equal(updatedSiteWhere.deletedAt, null);
+      assert.equal(updatedSiteData.status, CAMERA_STATUS.OFFLINE);
+      assert.ok(updatedSiteData.deletedAt instanceof Date);
+
+      // Verify audit log for site deletion
+      const siteAudit = auditLogs.find((l) => l.targetId === targetSiteId);
+      assert.ok(siteAudit);
+      assert.equal(siteAudit.action, AUDIT_ACTION.DELETE_PPE_CAMERA);
+      assert.equal(siteAudit.targetType, AUDIT_TARGET_TYPE.PPE_SITE);
+
+      // 4. Process ZONE_DELETED event via consumer
+      const zoneDeletedEvent = {
+        eventId: "018f28a3-9b81-7000-8000-444444444444",
+        topic: KAFKA_TOPICS.PPE_ZONE_DELETED,
+        traceId: "req-trace-zone-del-01",
+        timestamp: Date.now(),
+        producer: "ppe-site-service",
+        payload: {
+          zoneId: targetZoneId,
+        },
+      };
+
+      const zoneResult = await consumer.dispatchMessage(
+        KAFKA_TOPICS.PPE_ZONE_DELETED,
+        zoneDeletedEvent,
+      );
+      assert.equal(zoneResult.success, true);
+      assert.equal(zoneResult.affectedCount, 2);
+      assert.equal(updatedZoneWhere.zoneId, targetZoneId);
+      assert.equal(updatedZoneWhere.deletedAt, null);
+      assert.equal(updatedZoneData.zoneId, null);
+
+      // 5. Malformed payload rejection
+      const invalidResult = await consumer.handleSiteDeletedMessage({ invalid: true });
+      assert.equal(invalidResult.success, false);
+      assert.ok(invalidResult.error?.includes("Malformed SITE_DELETED event"));
+
+      // 6. Consumer lifecycle status and app registration
+      assert.equal(consumer.consumerGroup, "ppe-camera-consumer-group");
+      assert.ok(consumer.subscribedTopics.includes("ppe.site.deleted"));
+      assert.ok(consumer.subscribedTopics.includes("ppe.zone.deleted"));
+      assert.ok(cameraApp.locals.cameraEventConsumer instanceof CameraEventConsumer);
     });
   });
 });

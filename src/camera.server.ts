@@ -11,6 +11,7 @@ try {
 import cameraApp from "./camera.app";
 import { envConfig } from "./config/env.config";
 import { cameraPrisma } from "./database/camera.client";
+import { defaultCameraEventConsumer } from "./modules/camera/camera.consumer";
 
 const PORT = envConfig.camera.port || 8892;
 
@@ -29,6 +30,10 @@ export const server = cameraApp.listen(PORT, () => {
   console.log(
     `[Camera Service] ✅ Listening for cameras, streams and health probes on port ${PORT}`,
   );
+  // SEC-24: Khởi chạy Kafka consumer lắng nghe sự kiện vòng đời Site và Zone
+  defaultCameraEventConsumer.start().catch((err) => {
+    console.error("[Camera Service] Failed to start Kafka Event Consumer:", err);
+  });
 });
 
 let isShuttingDown = false;
@@ -54,6 +59,11 @@ export async function handleCameraShutdown(signal: string): Promise<void> {
     if (typeof server.closeIdleConnections === "function") {
       server.closeIdleConnections();
     }
+
+    // SEC-24: Ngắt kết nối Kafka Event Consumer
+    await defaultCameraEventConsumer.stop().catch((err) => {
+      console.warn("[Camera Service] Error stopping Kafka Event Consumer:", err);
+    });
 
     // 2. Stop accepting new HTTP requests
     await new Promise<void>((resolve) => {

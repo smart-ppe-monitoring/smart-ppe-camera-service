@@ -11,6 +11,10 @@ import {
   ppeCameraStatusChangedKafkaEventSchema,
   ppeSiteAlertTriggeredPayloadSchema,
   ppeSiteAlertTriggeredKafkaEventSchema,
+  ppeSiteDeletedPayloadSchema,
+  ppeSiteDeletedKafkaEventSchema,
+  ppeZoneDeletedPayloadSchema,
+  ppeZoneDeletedKafkaEventSchema,
 } from "../validations/kafka-event.schema";
 import {
   PPEViolationType,
@@ -53,6 +57,16 @@ export type PPESiteAlertTriggeredKafkaEvent = z.infer<
   typeof ppeSiteAlertTriggeredKafkaEventSchema
 >;
 
+export type PPESiteDeletedPayload = z.infer<typeof ppeSiteDeletedPayloadSchema>;
+export type PPESiteDeletedKafkaEvent = z.infer<
+  typeof ppeSiteDeletedKafkaEventSchema
+>;
+
+export type PPEZoneDeletedPayload = z.infer<typeof ppeZoneDeletedPayloadSchema>;
+export type PPEZoneDeletedKafkaEvent = z.infer<
+  typeof ppeZoneDeletedKafkaEventSchema
+>;
+
 /**
  * Bản đồ tổng hợp Topic -> Payload type tương ứng
  */
@@ -61,4 +75,6 @@ export interface KafkaTopicPayloadMap {
   "ppe.incident.resolved": PPEIncidentResolvedPayload;
   "ppe.camera.status_changed": PPECameraStatusChangedPayload;
   "ppe.site.alert_triggered": PPESiteAlertTriggeredPayload;
+  "ppe.site.deleted": PPESiteDeletedPayload;
+  "ppe.zone.deleted": PPEZoneDeletedPayload;
 }

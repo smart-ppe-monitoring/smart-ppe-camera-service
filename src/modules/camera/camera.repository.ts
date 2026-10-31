@@ -250,6 +250,40 @@ export class CameraRepository {
     });
   }
 
+  /**
+   * SEC-24: Soft delete toàn bộ camera thuộc siteId khi site bị xóa trong smart-ppe-site-service.
+   * Cập nhật deletedAt và status = OFFLINE để bảo toàn tính toàn vẹn dữ liệu và tránh orphaned cameras.
+   */
+  async softDeleteCamerasBySiteId(siteId: string): Promise<number> {
+    const result = await (this.db as any).camera.updateMany({
+      where: {
+        siteId,
+        deletedAt: null,
+      },
+      data: {
+        deletedAt: new Date(),
+        status: CAMERA_STATUS.OFFLINE,
+      },
+    });
+    return result?.count ?? 0;
+  }
+
+  /**
+   * SEC-24: Gỡ bỏ liên kết zoneId (unassign) khỏi toàn bộ camera thuộc zoneId khi zone bị xóa.
+   */
+  async unassignCamerasByZoneId(zoneId: string): Promise<number> {
+    const result = await (this.db as any).camera.updateMany({
+      where: {
+        zoneId,
+        deletedAt: null,
+      },
+      data: {
+        zoneId: null,
+      },
+    });
+    return result?.count ?? 0;
+  }
+
   // ── Camera Config Operations ───────────────────────────────────────────────
   async findCameraConfig(cameraId: string) {
     return (this.db as any).cameraConfig.findUnique({
