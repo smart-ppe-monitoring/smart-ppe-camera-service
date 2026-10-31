@@ -77,6 +77,39 @@ export interface CameraAuditLogger {
   }): Promise<any>;
 }
 
+/**
+ * SEC-13: Default Camera Audit Logger thực hiện ghi nhật ký kiểm toán có cấu trúc (JSON Structured Logging)
+ * ngăn chặn tình trạng thất thoát audit logs khi camera service vận hành độc lập.
+ */
+export class DefaultCameraAuditLogger implements CameraAuditLogger {
+  async recordLog(data: {
+    actorId?: string;
+    action: string;
+    targetType: string;
+    targetId: string;
+    details?: any;
+    ipAddress?: string;
+    userAgent?: string;
+  }): Promise<any> {
+    const logEntry = {
+      timestamp: new Date().toISOString(),
+      service: "camera-service",
+      actorId: data.actorId || "SYSTEM",
+      action: data.action,
+      targetType: data.targetType,
+      targetId: data.targetId,
+      details: data.details || {},
+      ipAddress: data.ipAddress || null,
+      userAgent: data.userAgent || null,
+    };
+
+    console.log(`[AUDIT] ${JSON.stringify(logEntry)}`);
+    return logEntry;
+  }
+}
+
+export const defaultCameraAuditLogger = new DefaultCameraAuditLogger();
+
 export interface StreamPingResult {
   reachable: boolean;
   latencyMs: number | null;
@@ -169,7 +202,7 @@ export class CameraService {
     pinger?: StreamPinger,
   ) {
     this.repository = repository || cameraRepository;
-    this.audit = audit;
+    this.audit = audit !== undefined ? audit : defaultCameraAuditLogger;
     this.pinger = pinger || probeStreamConnection;
   }
 
@@ -628,4 +661,7 @@ export class CameraService {
   }
 }
 
-export const cameraService = new CameraService();
+export const cameraService = new CameraService(
+  cameraRepository,
+  defaultCameraAuditLogger,
+);

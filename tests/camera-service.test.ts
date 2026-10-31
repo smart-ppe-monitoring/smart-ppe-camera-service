@@ -16,7 +16,12 @@ import {
   updateCameraConfigSchema,
   cameraHealthLogQuerySchema,
 } from "../src/modules/camera/camera.validation";
-import { CameraService, maskStreamCredentials } from "../src/modules/camera/camera.service";
+import {
+  CameraService,
+  cameraService,
+  defaultCameraAuditLogger,
+  maskStreamCredentials,
+} from "../src/modules/camera/camera.service";
 import { CameraRepository } from "../src/modules/camera/camera.repository";
 import { AppError } from "../src/common/errors/app-error";
 import { ERROR_CODE } from "../src/common/errors/error-code";
@@ -27,6 +32,11 @@ import { isUuid } from "../src/common/helpers/uuid.helper";
 import cameraApp, { checkDatabaseHealth, DB_HEALTH_CACHE_TTL_MS } from "../src/camera.app";
 import { parseTrustProxy } from "../src/config/env.config";
 import { requireGatewayOrigin } from "../src/middlewares/request-id.middleware";
+import {
+  extractTokenFromRequest,
+  authMiddleware,
+} from "../src/middlewares/auth.middleware";
+import { maintenanceGuard } from "../src/middlewares/maintenance.middleware";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -1239,6 +1249,163 @@ describe("Task BE-05: PPE Camera Management Service Suite", () => {
       await repo.findAllCameras({ page: 1, limit: 10 });
       assert.ok(findManyArgs);
       assert.equal(findManyArgs.where.deletedAt, null);
+    });
+
+    it("SEC-13: default CameraService singleton should be connected to defaultCameraAuditLogger", async () => {
+      // 1. Verify defaultCameraAuditLogger records structured audit log
+      let capturedConsoleLog = "";
+      const originalConsoleLog = console.log;
+      console.log = (msg: any) => {
+        capturedConsoleLog = msg;
+      };
+
+      try {
+        const result = await defaultCameraAuditLogger.recordLog({
+          actorId: "actor-123",
+          action: AUDIT_ACTION.REGISTER_PPE_CAMERA,
+          targetType: AUDIT_TARGET_TYPE.PPE_CAMERA,
+          targetId: "cam-test-123",
+          details: { name: "Test Cam" },
+        });
+
+        assert.equal(result.actorId, "actor-123");
+        assert.equal(result.action, AUDIT_ACTION.REGISTER_PPE_CAMERA);
+        assert.ok(capturedConsoleLog.includes("[AUDIT]"));
+        assert.ok(capturedConsoleLog.includes("cam-test-123"));
+      } finally {
+        console.log = originalConsoleLog;
+      }
+
+      // 2. Verify default singleton export has audit logger attached
+      assert.ok((cameraService as any).audit, "cameraService must have an active audit logger");
+      assert.equal((cameraService as any).audit, defaultCameraAuditLogger);
+
+      // 3. Verify new CameraService() without arguments defaults to defaultCameraAuditLogger
+      const testService = new CameraService();
+      assert.equal((testService as any).audit, defaultCameraAuditLogger);
+    });
+
+    it("SEC-14: authMiddleware should reject token transport via query parameters (?token=... or ?ticket=...)", async () => {
+      // 1. extractTokenFromRequest should ignore query string parameters
+      const reqWithQuery = {
+        cookies: {},
+        headers: {},
+        query: { token: "query-token-abc", ticket: "query-ticket-xyz" },
+      } as any;
+      const extracted = extractTokenFromRequest(reqWithQuery);
+      assert.equal(extracted, undefined, "extractTokenFromRequest must not extract tokens from query parameters");
+
+      // 2. authMiddleware should reject requests containing ?token=...
+      let tokenError: any = null;
+      await authMiddleware(
+        { query: { token: "leaked-token" }, headers: {}, cookies: {} } as any,
+        {} as any,
+        ((err?: any) => { tokenError = err; }) as any,
+      );
+      assert.ok(tokenError instanceof AppError);
+      assert.equal(tokenError.statusCode, 400);
+      assert.equal(tokenError.code, ERROR_CODE.VALIDATION_ERROR);
+      assert.ok(tokenError.message.includes("Không được phép truyền token xác thực qua query string"));
+
+      // 3. authMiddleware should reject requests containing ?ticket=...
+      let ticketError: any = null;
+      await authMiddleware(
+        { query: { ticket: "leaked-ticket" }, headers: {}, cookies: {} } as any,
+        {} as any,
+        ((err?: any) => { ticketError = err; }) as any,
+      );
+      assert.ok(ticketError instanceof AppError);
+      assert.equal(ticketError.statusCode, 400);
+      assert.equal(ticketError.code, ERROR_CODE.VALIDATION_ERROR);
+    });
+
+    it("SEC-15: updateCamera should wrap camera and stream updates in a transactional execution", async () => {
+      let transactionExecuted = false;
+      let streamUpdatedInTx = false;
+      let cameraUpdatedInTx = false;
+
+      const mockDb: any = {
+        $transaction: async (fn: any) => {
+          transactionExecuted = true;
+          const tx = {
+            cameraStream: {
+              findFirst: async () => ({ id: "stream-tx-1", streamUrl: "rtsp://old-url" }),
+              update: async () => {
+                streamUpdatedInTx = true;
+              },
+            },
+            camera: {
+              update: async ({ data }: any) => {
+                cameraUpdatedInTx = true;
+                return { id: "cam-tx-1", ...data };
+              },
+            },
+          };
+          return fn(tx);
+        },
+      };
+
+      const repo = new CameraRepository(mockDb);
+      await repo.updateCamera("cam-tx-1", {
+        name: "Transactional Cam",
+        streamUrl: "rtsp://admin:pass@192.168.1.88/stream",
+      });
+
+      assert.equal(transactionExecuted, true, "updateCamera must execute inside $transaction");
+      assert.equal(streamUpdatedInTx, true, "cameraStream.update must execute within the transaction");
+      assert.equal(cameraUpdatedInTx, true, "camera.update must execute within the transaction");
+    });
+
+    it("SEC-16: maintenanceGuard should enforce 503 SYSTEM_MAINTENANCE when maintenance mode is active", async () => {
+      // 1. Regular user receives 503 when maintenance is active
+      const activeMaintenance = maintenanceGuard({ isMaintenanceMode: true });
+
+      let error503: any = null;
+      await activeMaintenance(
+        { originalUrl: "/api/v1/cameras", user: { role: "OPERATOR", permissions: [] } } as any,
+        {} as any,
+        ((err?: any) => { error503 = err; }) as any,
+      );
+      assert.ok(error503 instanceof AppError);
+      assert.equal(error503.statusCode, 503);
+      assert.equal(error503.code, ERROR_CODE.SYSTEM_MAINTENANCE);
+
+      // 2. Admin user bypasses maintenance mode
+      let adminPassed = false;
+      await activeMaintenance(
+        { originalUrl: "/api/v1/cameras", user: { role: ROLES.ADMIN, permissions: [] } } as any,
+        {} as any,
+        ((err?: any) => { if (!err) adminPassed = true; }) as any,
+      );
+      assert.equal(adminPassed, true, "ADMIN must bypass maintenance guard");
+
+      // 3. User with MAINTENANCE_BYPASS permission bypasses maintenance mode
+      let bypassPassed = false;
+      await activeMaintenance(
+        { originalUrl: "/api/v1/cameras", user: { role: "OPERATOR", permissions: ["MAINTENANCE_BYPASS"] } } as any,
+        {} as any,
+        ((err?: any) => { if (!err) bypassPassed = true; }) as any,
+      );
+      assert.equal(bypassPassed, true, "MAINTENANCE_BYPASS permission must bypass maintenance guard");
+
+      // 4. Exempt paths (/health) bypass maintenance mode
+      let healthPassed = false;
+      await activeMaintenance(
+        { originalUrl: "/health" } as any,
+        {} as any,
+        ((err?: any) => { if (!err) healthPassed = true; }) as any,
+      );
+      assert.equal(healthPassed, true, "Health check path must bypass maintenance guard");
+
+      // 5. Inactive maintenance mode allows regular requests
+      const inactiveMaintenance = maintenanceGuard({ isMaintenanceMode: false });
+      let normalPassed = false;
+      await inactiveMaintenance(
+        { originalUrl: "/api/v1/cameras", user: { role: "OPERATOR" } } as any,
+        {} as any,
+        ((err?: any) => { if (!err) normalPassed = true; }) as any,
+      );
+      assert.equal(normalPassed, true, "Inactive maintenance must allow regular requests");
     });
   });
 });

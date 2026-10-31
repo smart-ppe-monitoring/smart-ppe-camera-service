@@ -184,31 +184,47 @@ export class CameraRepository {
       updateData.code = data.code.toUpperCase();
     }
 
+    const hasNewStreamUrl = Boolean(
+      data.streamUrl && !data.streamUrl.includes(":***@"),
+    );
+
     // SEC-04: If streamUrl contains masked credentials (:***@), do not overwrite real password in DB
-    if (data.streamUrl) {
-      if (data.streamUrl.includes(":***@")) {
-        delete updateData.streamUrl;
-      } else {
-        const firstStream = await (this.db as any).cameraStream.findFirst({
+    if (data.streamUrl && data.streamUrl.includes(":***@")) {
+      delete updateData.streamUrl;
+    }
+
+    // SEC-15: Bọc toàn bộ thao tác cập nhật camera và đồng bộ luồng stream vào $transaction để đảm bảo tính nguyên tử (atomic)
+    const runInTransaction =
+      typeof (this.db as any).$transaction === "function"
+        ? (fn: any) =>
+            (this.db as any).$transaction(
+              fn,
+              DEFAULT_CAMERA_TRANSACTION_OPTIONS,
+            )
+        : async (fn: any) => fn(this.db);
+
+    return runInTransaction(async (tx: any) => {
+      if (hasNewStreamUrl) {
+        const firstStream = await tx.cameraStream.findFirst({
           where: { cameraId: id },
           orderBy: { createdAt: "asc" },
         });
         if (firstStream) {
-          await (this.db as any).cameraStream.update({
+          await tx.cameraStream.update({
             where: { id: firstStream.id },
             data: { streamUrl: data.streamUrl },
           });
         }
       }
-    }
 
-    return (this.db as any).camera.update({
-      where: { id },
-      data: updateData,
-      include: {
-        config: true,
-        streams: true,
-      },
+      return tx.camera.update({
+        where: { id },
+        data: updateData,
+        include: {
+          config: true,
+          streams: true,
+        },
+      });
     });
   }
 

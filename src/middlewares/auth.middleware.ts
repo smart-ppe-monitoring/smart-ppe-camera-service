@@ -13,19 +13,6 @@ export function extractTokenFromRequest(req: Request): string | undefined {
       token = authHeader.split(" ")[1];
     }
   }
-
-  const cleanPath = (
-    (req.baseUrl || "") + (req.path || req.originalUrl || "")
-  ).split("?")[0];
-  const isAllowedQueryTokenEndpoint =
-    cleanPath.endsWith("/stream") || cleanPath.endsWith("/download");
-
-  if (!token && isAllowedQueryTokenEndpoint) {
-    const queryToken = req.query?.ticket || req.query?.token;
-    if (typeof queryToken === "string") {
-      token = queryToken;
-    }
-  }
   return token;
 }
 
@@ -34,16 +21,12 @@ export async function authMiddleware(
   res: Response,
   next: NextFunction,
 ): Promise<void> {
-  const cleanPath = (
-    (req.baseUrl || "") + (req.path || req.originalUrl || "")
-  ).split("?")[0];
-  const isAllowedQueryTokenEndpoint =
-    cleanPath.endsWith("/stream") || cleanPath.endsWith("/download");
-
-  if (!isAllowedQueryTokenEndpoint && req.query?.token) {
+  // SEC-14: Nghiêm cấm truyền token qua query string (?token=... hoặc ?ticket=...) trên toàn bộ microservice
+  // nhằm triệt tiêu rò rỉ JWT token vào nhật ký truy cập (access logs), browser history và proxy logs (CWE-598)
+  if (req.query?.token || req.query?.ticket) {
     next(
       new AppError(
-        "Không được phép truyền token xác thực qua query string trên API thông thường để tránh rò rỉ qua log và browser history",
+        "Không được phép truyền token xác thực qua query string để tránh rò rỉ qua log và browser history",
         400,
         ERROR_CODE.VALIDATION_ERROR,
       ),
