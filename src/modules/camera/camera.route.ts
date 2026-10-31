@@ -3,6 +3,7 @@ import { cameraController } from "./camera.controller";
 import { authMiddleware } from "../../middlewares/auth.middleware";
 import { requirePermission } from "../../middlewares/permission.middleware";
 import { validate } from "../../middlewares/validate.middleware";
+import { pingRateLimitMiddleware } from "../../middlewares/rate-limit.middleware";
 import { PERMISSIONS } from "../../common/constants/permission.constant";
 import {
   cameraIdParamSchema,
@@ -87,6 +88,15 @@ cameraRouter.delete(
   cameraController.clearCameraConfig,
 );
 
+// SEC-32: Tuyến API đặt lại cấu hình camera về mặc định
+cameraRouter.post(
+  "/:id/config/reset",
+  authMiddleware,
+  requirePermission(PERMISSIONS.PPE_CAMERA_MANAGE),
+  validate(cameraIdParamSchema, "params"),
+  cameraController.resetCameraConfig,
+);
+
 // Camera Streams (Nested)
 cameraRouter.get(
   "/:id/streams",
@@ -117,6 +127,7 @@ cameraRouter.get(
 
 cameraRouter.post(
   "/:id/ping",
+  pingRateLimitMiddleware,
   authMiddleware,
   requirePermission(PERMISSIONS.PPE_CAMERA_MANAGE),
   validate(cameraIdParamSchema, "params"),

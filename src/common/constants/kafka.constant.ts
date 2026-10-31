@@ -25,6 +25,10 @@ export const KAFKA_TOPICS = {
 
   // Dead Letter Queue cho các tin nhắn lỗi / poison pills
   PPE_DEAD_LETTER_QUEUE: "ppe.dead-letter-queue",
+
+  // SEC-24: Sự kiện vòng đời Site và Zone từ smart-ppe-site-service để đồng bộ xóa camera mồ côi
+  PPE_SITE_DELETED: "ppe.site.deleted",
+  PPE_ZONE_DELETED: "ppe.zone.deleted",
 } as const;
 
 export type KafkaTopic = (typeof KAFKA_TOPICS)[keyof typeof KAFKA_TOPICS];
@@ -66,6 +70,7 @@ export type PPEDetectionClass =
   (typeof PPE_DETECTION_CLASS)[keyof typeof PPE_DETECTION_CLASS];
 
 export const KAFKA_CONSUMER_GROUPS = {
+  CAMERA_SERVICE: "ppe-camera-consumer-group",
   INCIDENT_SERVICE: "ppe-incident-consumer-group",
   NOTIFICATION_SERVICE: "ppe-notification-consumer-group",
   REPORTING_SERVICE: "ppe-reporting-consumer-group",

@@ -80,7 +80,9 @@ export function createRateLimiter(options: RateLimitOptions = {}) {
     next: NextFunction,
   ): void | Promise<void> => {
     const clientIp = req.ip || req.socket.remoteAddress || "unknown";
-    const routePrefix = req.baseUrl || req.path || "";
+    // SEC-19: Chuẩn hóa route prefix loại bỏ tiền tố /api/v1 để triệt tiêu phân mảnh rate limit do dual-mount
+    const rawPrefix = req.baseUrl || req.path || "";
+    const routePrefix = rawPrefix.replace(/^\/api\/v\d+/, "") || "/";
     const key = options.keyGenerator
       ? options.keyGenerator(req)
       : `${clientIp}:${routePrefix}`;
@@ -236,4 +238,14 @@ export const authRateLimitMiddleware = createRateLimiter({
   windowMs: envConfig.rateLimit.authWindowMs,
   maxRequests: envConfig.rateLimit.authMaxRequests,
   message: "Too many authentication attempts, please try again later",
+});
+
+/**
+ * SEC-07: Rate Limiter nghiêm ngặt dành riêng cho endpoint ping probe camera
+ * ngăn chặn DoS và phình to bảng nhật ký camera_health_logs.
+ */
+export const pingRateLimitMiddleware = createRateLimiter({
+  windowMs: 60 * 1000,
+  maxRequests: 30,
+  message: "Quá giới hạn tần suất kiểm tra sức khỏe camera, vui lòng thử lại sau",
 });

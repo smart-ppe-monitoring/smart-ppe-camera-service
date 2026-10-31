@@ -1,13 +1,9 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { jwtConfig } from "../config/jwt.config";
-import { envConfig } from "../config/env.config";
 import { AppError } from "../common/errors/app-error";
 import { ERROR_CODE } from "../common/errors/error-code";
 import { JWT_PURPOSE, JWT_ALGORITHM } from "../common/constants/jwt.constant";
-import { PERMISSIONS } from "../common/constants/permission.constant";
-import { ROLES } from "../common/constants/role.constant";
-import { isTrustedGatewayRequest } from "./request-id.middleware";
 
 export function extractTokenFromRequest(req: Request): string | undefined {
   let token = req.cookies?.accessToken;
@@ -15,19 +11,6 @@ export function extractTokenFromRequest(req: Request): string | undefined {
     const authHeader = req.headers?.authorization;
     if (authHeader && authHeader.startsWith("Bearer ")) {
       token = authHeader.split(" ")[1];
-    }
-  }
-
-  const cleanPath = (
-    (req.baseUrl || "") + (req.path || req.originalUrl || "")
-  ).split("?")[0];
-  const isAllowedQueryTokenEndpoint =
-    cleanPath.endsWith("/stream") || cleanPath.endsWith("/download");
-
-  if (!token && isAllowedQueryTokenEndpoint) {
-    const queryToken = req.query?.ticket || req.query?.token;
-    if (typeof queryToken === "string") {
-      token = queryToken;
     }
   }
   return token;
@@ -38,16 +21,12 @@ export async function authMiddleware(
   res: Response,
   next: NextFunction,
 ): Promise<void> {
-  const cleanPath = (
-    (req.baseUrl || "") + (req.path || req.originalUrl || "")
-  ).split("?")[0];
-  const isAllowedQueryTokenEndpoint =
-    cleanPath.endsWith("/stream") || cleanPath.endsWith("/download");
-
-  if (!isAllowedQueryTokenEndpoint && req.query?.token) {
+  // SEC-14: Nghiêm cấm truyền token qua query string (?token=... hoặc ?ticket=...) trên toàn bộ microservice
+  // nhằm triệt tiêu rò rỉ JWT token vào nhật ký truy cập (access logs), browser history và proxy logs (CWE-598)
+  if (req.query?.token || req.query?.ticket) {
     next(
       new AppError(
-        "Không được phép truyền token xác thực qua query string trên API thông thường để tránh rò rỉ qua log và browser history",
+        "Không được phép truyền token xác thực qua query string để tránh rò rỉ qua log và browser history",
         400,
         ERROR_CODE.VALIDATION_ERROR,
       ),
@@ -58,17 +37,6 @@ export async function authMiddleware(
   const token = extractTokenFromRequest(req);
 
   if (!token) {
-    const gatewaySecret = envConfig.gateway.internalSecret;
-    if (gatewaySecret && isTrustedGatewayRequest(req, gatewaySecret)) {
-      req.user = {
-        id: "system-internal-service",
-        email: "system@internal.ppe.local",
-        role: ROLES.ADMIN,
-        permissions: Object.values(PERMISSIONS),
-      };
-      return next();
-    }
-
     next(new AppError("Unauthorized", 401, ERROR_CODE.UNAUTHORIZED));
     return;
   }
@@ -114,11 +82,43 @@ export async function authMiddleware(
       return;
     }
 
+    // SEC-02: Isolate purpose claims - reject 2FA temp tokens on business endpoints
+    if (payload.purpose && payload.purpose !== JWT_PURPOSE.ACCESS) {
+      next(
+        new AppError(
+          "Token không có quyền truy cập API nghiệp vụ",
+          401,
+          ERROR_CODE.UNAUTHORIZED,
+        ),
+      );
+      return;
+    }
+
+    // SEC-06: Chặn token có cờ mustChangePassword truy cập satellite services
+    const jwtPayload = payload as any;
+    if (
+      jwtPayload.mustChangePassword === true ||
+      jwtPayload.mustChangePassword === "true"
+    ) {
+      next(
+        new AppError(
+          "Bạn bắt buộc phải đổi mật khẩu trước khi thực hiện các thao tác khác trên hệ thống",
+          403,
+          ERROR_CODE.FORBIDDEN,
+        ),
+      );
+      return;
+    }
+
     req.user = {
       id: payload.id || payload.sub,
       email: payload.email,
       role: payload.role,
       roleId: payload.roleId,
+      siteId: typeof jwtPayload.siteId === "string" ? jwtPayload.siteId : undefined,
+      siteIds: Array.isArray(jwtPayload.siteIds)
+        ? (jwtPayload.siteIds as string[])
+        : undefined,
       permissions: Array.isArray(payload.permissions) ? payload.permissions : [],
     };
 

@@ -6,6 +6,7 @@ import {
   calculatePaginationSkip,
   formatPaginationMeta,
 } from "../../common/helpers/pagination.helper";
+import { generateId } from "../../common/helpers/uuid.helper";
 import {
   CreateCameraDto,
   UpdateCameraDto,
@@ -38,6 +39,7 @@ export class CameraRepository {
       async (tx: any) => {
         const camera = await tx.camera.create({
           data: {
+            id: generateId(),
             siteId: data.siteId,
             zoneId: data.zoneId || null,
             name: data.name,
@@ -53,6 +55,7 @@ export class CameraRepository {
         // Tự động khởi tạo CameraConfig mặc định
         const config = await tx.cameraConfig.create({
           data: {
+            id: generateId(),
             cameraId: camera.id,
             enabled: DEFAULT_CAMERA_CONFIG.enabled,
             captureFps: DEFAULT_CAMERA_CONFIG.captureFps,
@@ -69,6 +72,7 @@ export class CameraRepository {
 
         const stream = await tx.cameraStream.create({
           data: {
+            id: generateId(),
             cameraId: camera.id,
             protocol: defaultProtocol,
             streamUrl: data.streamUrl,
@@ -89,8 +93,8 @@ export class CameraRepository {
   }
 
   async findCameraById(id: string) {
-    return (this.db as any).camera.findUnique({
-      where: { id },
+    return (this.db as any).camera.findFirst({
+      where: { id, deletedAt: null },
       include: {
         config: true,
         streams: true,
@@ -102,8 +106,8 @@ export class CameraRepository {
   }
 
   async findCameraByCode(code: string) {
-    return (this.db as any).camera.findUnique({
-      where: { code: code.toUpperCase() },
+    return (this.db as any).camera.findFirst({
+      where: { code: code.toUpperCase(), deletedAt: null },
       include: {
         config: true,
         streams: true,
@@ -119,10 +123,15 @@ export class CameraRepository {
     const { skip, take, page: safePage, limit: safeLimit } =
       calculatePaginationSkip(page, limit);
 
-    const where: any = {};
+    // SEC-12: Mặc định lọc bỏ các camera đã bị xóa mềm (deletedAt !== null)
+    const where: any = {
+      deletedAt: null,
+    };
 
     if (query.siteId) {
       where.siteId = query.siteId;
+    } else if ((query as any).siteIds && Array.isArray((query as any).siteIds)) {
+      where.siteId = { in: (query as any).siteIds };
     }
 
     if (query.zoneId) {
@@ -159,9 +168,6 @@ export class CameraRepository {
         include: {
           config: true,
           streams: true,
-          _count: {
-            select: { healthLogs: true },
-          },
         },
       }),
     ]);
@@ -178,26 +184,47 @@ export class CameraRepository {
       updateData.code = data.code.toUpperCase();
     }
 
-    if (data.streamUrl) {
-      const firstStream = await (this.db as any).cameraStream.findFirst({
-        where: { cameraId: id },
-        orderBy: { createdAt: "asc" },
-      });
-      if (firstStream) {
-        await (this.db as any).cameraStream.update({
-          where: { id: firstStream.id },
-          data: { streamUrl: data.streamUrl },
-        });
-      }
+    const hasNewStreamUrl = Boolean(
+      data.streamUrl && !data.streamUrl.includes(":***@"),
+    );
+
+    // SEC-04: If streamUrl contains masked credentials (:***@), do not overwrite real password in DB
+    if (data.streamUrl && data.streamUrl.includes(":***@")) {
+      delete updateData.streamUrl;
     }
 
-    return (this.db as any).camera.update({
-      where: { id },
-      data: updateData,
-      include: {
-        config: true,
-        streams: true,
-      },
+    // SEC-15: Bọc toàn bộ thao tác cập nhật camera và đồng bộ luồng stream vào $transaction để đảm bảo tính nguyên tử (atomic)
+    const runInTransaction =
+      typeof (this.db as any).$transaction === "function"
+        ? (fn: any) =>
+            (this.db as any).$transaction(
+              fn,
+              DEFAULT_CAMERA_TRANSACTION_OPTIONS,
+            )
+        : async (fn: any) => fn(this.db);
+
+    return runInTransaction(async (tx: any) => {
+      if (hasNewStreamUrl) {
+        const firstStream = await tx.cameraStream.findFirst({
+          where: { cameraId: id },
+          orderBy: { createdAt: "asc" },
+        });
+        if (firstStream) {
+          await tx.cameraStream.update({
+            where: { id: firstStream.id },
+            data: { streamUrl: data.streamUrl },
+          });
+        }
+      }
+
+      return tx.camera.update({
+        where: { id },
+        data: updateData,
+        include: {
+          config: true,
+          streams: true,
+        },
+      });
     });
   }
 
@@ -212,9 +239,49 @@ export class CameraRepository {
   }
 
   async deleteCamera(id: string) {
-    return (this.db as any).camera.delete({
+    // SEC-12: Chuyển sang soft delete, lưu giữ deletedAt và chuyển status sang OFFLINE
+    // để bảo toàn toàn bộ camera_streams, camera_configs và camera_health_logs cho lưu vết pháp lý và audit
+    return (this.db as any).camera.update({
       where: { id },
+      data: {
+        deletedAt: new Date(),
+        status: CAMERA_STATUS.OFFLINE,
+      },
     });
+  }
+
+  /**
+   * SEC-24: Soft delete toàn bộ camera thuộc siteId khi site bị xóa trong smart-ppe-site-service.
+   * Cập nhật deletedAt và status = OFFLINE để bảo toàn tính toàn vẹn dữ liệu và tránh orphaned cameras.
+   */
+  async softDeleteCamerasBySiteId(siteId: string): Promise<number> {
+    const result = await (this.db as any).camera.updateMany({
+      where: {
+        siteId,
+        deletedAt: null,
+      },
+      data: {
+        deletedAt: new Date(),
+        status: CAMERA_STATUS.OFFLINE,
+      },
+    });
+    return result?.count ?? 0;
+  }
+
+  /**
+   * SEC-24: Gỡ bỏ liên kết zoneId (unassign) khỏi toàn bộ camera thuộc zoneId khi zone bị xóa.
+   */
+  async unassignCamerasByZoneId(zoneId: string): Promise<number> {
+    const result = await (this.db as any).camera.updateMany({
+      where: {
+        zoneId,
+        deletedAt: null,
+      },
+      data: {
+        zoneId: null,
+      },
+    });
+    return result?.count ?? 0;
   }
 
   // ── Camera Config Operations ───────────────────────────────────────────────
@@ -231,6 +298,7 @@ export class CameraRepository {
     return (this.db as any).cameraConfig.upsert({
       where: { cameraId },
       create: {
+        id: generateId(),
         cameraId,
         enabled:
           data.enabled !== undefined
@@ -247,10 +315,20 @@ export class CameraRepository {
     });
   }
 
+  /**
+   * SEC-32: Xóa thực sự bản ghi CameraConfig trong cơ sở dữ liệu thay vì upsert đè giá trị mặc định.
+   */
+  async deleteCameraConfig(cameraId: string) {
+    return (this.db as any).cameraConfig.deleteMany({
+      where: { cameraId },
+    });
+  }
+
   // ── Camera Stream Operations ───────────────────────────────────────────────
   async createCameraStream(data: CreateCameraStreamDto) {
     return (this.db as any).cameraStream.create({
       data: {
+        id: generateId(),
         cameraId: data.cameraId,
         protocol: data.protocol || STREAM_PROTOCOL.RTSP,
         streamUrl: data.streamUrl,
@@ -280,9 +358,14 @@ export class CameraRepository {
   }
 
   async updateCameraStream(id: string, data: UpdateCameraStreamDto) {
+    const updateData: any = { ...data };
+    // SEC-17: If streamUrl contains masked credentials (:***@), do not overwrite real password in DB
+    if (typeof updateData.streamUrl === "string" && updateData.streamUrl.includes(":***@")) {
+      delete updateData.streamUrl;
+    }
     return (this.db as any).cameraStream.update({
       where: { id },
-      data,
+      data: updateData,
     });
   }
 
@@ -297,7 +380,11 @@ export class CameraRepository {
     id: string,
     status: any,
     log: CreateCameraHealthLogDto,
+    retentionDays = 30,
   ) {
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
+
     return (this.db as any).$transaction(
       [
         (this.db as any).camera.update({
@@ -306,10 +393,18 @@ export class CameraRepository {
         }),
         (this.db as any).cameraHealthLog.create({
           data: {
+            id: generateId(),
             cameraId: log.cameraId,
             status: log.status,
             latencyMs: log.latencyMs ?? null,
             errorMessage: log.errorMessage ?? null,
+          },
+        }),
+        // SEC-07: Auto-purge logs older than retentionDays (30 days) for this camera
+        (this.db as any).cameraHealthLog.deleteMany({
+          where: {
+            cameraId: log.cameraId,
+            checkedAt: { lt: cutoffDate },
           },
         }),
       ],
@@ -317,9 +412,24 @@ export class CameraRepository {
     );
   }
 
+  /**
+   * SEC-07: Dọn dẹp các bản ghi nhật ký camera cũ hơn retentionDays (mặc định 30 ngày)
+   */
+  async purgeExpiredHealthLogs(retentionDays = 30): Promise<number> {
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
+    const result = await (this.db as any).cameraHealthLog.deleteMany({
+      where: {
+        checkedAt: { lt: cutoffDate },
+      },
+    });
+    return result.count ?? 0;
+  }
+
   async createHealthLog(data: CreateCameraHealthLogDto) {
     return (this.db as any).cameraHealthLog.create({
       data: {
+        id: generateId(),
         cameraId: data.cameraId,
         status: data.status,
         latencyMs: data.latencyMs ?? null,
