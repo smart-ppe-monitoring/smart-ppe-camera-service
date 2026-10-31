@@ -161,9 +161,6 @@ export class CameraRepository {
         include: {
           config: true,
           streams: true,
-          _count: {
-            select: { healthLogs: true },
-          },
         },
       }),
     ]);

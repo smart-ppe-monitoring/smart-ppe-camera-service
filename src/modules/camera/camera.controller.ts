@@ -194,7 +194,7 @@ export class CameraController {
   ) => {
     try {
       const { id } = req.params;
-      const result = await this.service.findCameraStreamById(id);
+      const result = await this.service.findCameraStreamById(id, req.user);
       res.json({
         success: true,
         data: result,
@@ -212,7 +212,12 @@ export class CameraController {
     try {
       const { id } = req.params;
       const body = req.body as UpdateCameraStreamDto;
-      const result = await this.service.updateCameraStream(id, body);
+      const result = await this.service.updateCameraStream(
+        id,
+        body,
+        req.user?.id,
+        req.user,
+      );
       res.json({
         success: true,
         data: result,
@@ -229,7 +234,11 @@ export class CameraController {
   ) => {
     try {
       const { id } = req.params;
-      const result = await this.service.deleteCameraStream(id);
+      const result = await this.service.deleteCameraStream(
+        id,
+        req.user?.id,
+        req.user,
+      );
       res.json({
         success: true,
         data: result,

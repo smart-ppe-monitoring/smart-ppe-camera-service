@@ -80,7 +80,9 @@ export function createRateLimiter(options: RateLimitOptions = {}) {
     next: NextFunction,
   ): void | Promise<void> => {
     const clientIp = req.ip || req.socket.remoteAddress || "unknown";
-    const routePrefix = req.baseUrl || req.path || "";
+    // SEC-19: Chuẩn hóa route prefix loại bỏ tiền tố /api/v1 để triệt tiêu phân mảnh rate limit do dual-mount
+    const rawPrefix = req.baseUrl || req.path || "";
+    const routePrefix = rawPrefix.replace(/^\/api\/v\d+/, "") || "/";
     const key = options.keyGenerator
       ? options.keyGenerator(req)
       : `${clientIp}:${routePrefix}`;

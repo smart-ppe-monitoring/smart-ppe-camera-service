@@ -358,7 +358,18 @@ export class CameraService {
     userContext?: UserContext,
   ) {
     await this.findCameraById(cameraId, userContext);
-    return this.repository.upsertCameraConfig(cameraId, data);
+    const updated = await this.repository.upsertCameraConfig(cameraId, data);
+
+    // SEC-21: Ghi AuditLog bắt buộc khi thay đổi cấu hình AI an toàn lao động
+    await this.audit?.recordLog({
+      actorId,
+      action: AUDIT_ACTION.UPDATE_PPE_CAMERA_SAFETY_CONFIG,
+      targetType: AUDIT_TARGET_TYPE.PPE_CAMERA,
+      targetId: cameraId,
+      details: data,
+    });
+
+    return updated;
   }
 
   async clearCameraConfig(
@@ -367,12 +378,22 @@ export class CameraService {
     userContext?: UserContext,
   ) {
     await this.findCameraById(cameraId, userContext);
-    return this.repository.upsertCameraConfig(cameraId, {
+    const updated = await this.repository.upsertCameraConfig(cameraId, {
       enabled: true,
       captureFps: 10,
       resolution: "1920x1080",
       processingEnabled: true,
     });
+
+    await this.audit?.recordLog({
+      actorId,
+      action: AUDIT_ACTION.DELETE_PPE_CAMERA_SAFETY_CONFIG,
+      targetType: AUDIT_TARGET_TYPE.PPE_CAMERA,
+      targetId: cameraId,
+      details: { resetToDefault: true },
+    });
+
+    return updated;
   }
 
   // ── Camera Stream Operations ───────────────────────────────────────────────
@@ -395,7 +416,7 @@ export class CameraService {
     return streams.map((s: any) => sanitizeStreamEntity(s));
   }
 
-  async findCameraStreamById(id: string) {
+  async findCameraStreamById(id: string, userContext?: UserContext) {
     const stream = await this.repository.findCameraStreamById(id);
     if (!stream) {
       throw new AppError(
@@ -404,17 +425,42 @@ export class CameraService {
         ERROR_CODE.NOT_FOUND,
       );
     }
+    if (stream.camera?.siteId) {
+      this.assertSiteAccess(stream.camera.siteId, userContext);
+    }
     return sanitizeStreamEntity(stream);
   }
 
-  async updateCameraStream(id: string, data: UpdateCameraStreamDto) {
-    await this.findCameraStreamById(id);
+  async updateCameraStream(
+    id: string,
+    data: UpdateCameraStreamDto,
+    actorId?: string,
+    userContext?: UserContext,
+  ) {
+    await this.findCameraStreamById(id, userContext);
     const updated = await this.repository.updateCameraStream(id, data);
     return sanitizeStreamEntity(updated);
   }
 
-  async deleteCameraStream(id: string) {
-    await this.findCameraStreamById(id);
+  async deleteCameraStream(
+    id: string,
+    actorId?: string,
+    userContext?: UserContext,
+  ) {
+    const stream = await this.findCameraStreamById(id, userContext);
+
+    // SEC-22: Không cho phép xóa stream duy nhất của camera, bảo đảm camera luôn có ít nhất 1 stream
+    const existingStreams = await this.repository.findStreamsByCameraId(
+      stream.cameraId || stream.camera?.id,
+    );
+    if (!existingStreams || existingStreams.length <= 1) {
+      throw new AppError(
+        "Không thể xóa luồng stream duy nhất của camera. Camera phải có ít nhất một luồng stream hoạt động.",
+        400,
+        ERROR_CODE.BAD_REQUEST,
+      );
+    }
+
     return this.repository.deleteCameraStream(id);
   }
 

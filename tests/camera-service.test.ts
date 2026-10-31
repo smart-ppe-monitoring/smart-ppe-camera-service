@@ -20,6 +20,7 @@ import { CameraService, maskStreamCredentials } from "../src/modules/camera/came
 import { CameraRepository } from "../src/modules/camera/camera.repository";
 import { AppError } from "../src/common/errors/app-error";
 import { ERROR_CODE } from "../src/common/errors/error-code";
+import { AUDIT_ACTION } from "../src/common/constants/audit-log.constant";
 import { PERMISSIONS } from "../src/common/constants/permission.constant";
 import cameraApp from "../src/camera.app";
 
@@ -743,6 +744,158 @@ describe("Task BE-05: PPE Camera Management Service Suite", () => {
       };
       const camBForAdmin = await service.findCameraById("cam-site-b", adminUser);
       assert.equal(camBForAdmin.id, "cam-site-b");
+    });
+
+    it("SEC-19: rate limiter should normalize /api/v1 prefix to prevent dual-mount quota dilution", async () => {
+      const { createRateLimiter } = await import("../src/middlewares/rate-limit.middleware");
+      const limiter = createRateLimiter({ windowMs: 60000, maxRequests: 2 });
+
+      let resHeaders1: Record<string, any> = {};
+      const mockReq1: any = {
+        ip: "10.0.0.99",
+        baseUrl: "/api/v1/cameras",
+        socket: {},
+      };
+      const mockRes1: any = {
+        setHeader: (k: string, v: any) => { resHeaders1[k] = v; },
+        status: () => mockRes1,
+        json: () => {},
+      };
+
+      // Request 1 via /api/v1/cameras
+      await limiter(mockReq1, mockRes1, () => {});
+      assert.equal(resHeaders1["X-RateLimit-Remaining"], 1);
+
+      // Request 2 via alias /cameras
+      let resHeaders2: Record<string, any> = {};
+      const mockReq2: any = {
+        ip: "10.0.0.99",
+        baseUrl: "/cameras",
+        socket: {},
+      };
+      const mockRes2: any = {
+        setHeader: (k: string, v: any) => { resHeaders2[k] = v; },
+        status: () => mockRes2,
+        json: () => {},
+      };
+      await limiter(mockReq2, mockRes2, () => {});
+      // Must decrement the SAME quota, remaining should be 0, not 1
+      assert.equal(resHeaders2["X-RateLimit-Remaining"], 0);
+
+      // Request 3 via /cameras should hit 429
+      let blockedCode = 0;
+      let blockedBody: any = null;
+      const mockRes3: any = {
+        setHeader: () => {},
+        status: (code: number) => { blockedCode = code; return mockRes3; },
+        json: (data: any) => { blockedBody = data; },
+      };
+      await limiter(mockReq2, mockRes3, () => {});
+      assert.equal(blockedCode, 429);
+      assert.equal(blockedBody.code, ERROR_CODE.RATE_LIMIT_EXCEEDED);
+    });
+
+    it("SEC-20: findAllCameras repository query should omit _count for healthLogs to prevent DB DoS", async () => {
+      let capturedInclude: any = null;
+      const mockDb: any = {
+        camera: {
+          count: async () => 1,
+          findMany: async (args: any) => {
+            capturedInclude = args.include;
+            return [];
+          },
+        },
+      };
+
+      const repo = new CameraRepository(mockDb);
+      await repo.findAllCameras({ page: 1, limit: 10 });
+
+      assert.ok(capturedInclude);
+      assert.equal(capturedInclude.config, true);
+      assert.equal(capturedInclude.streams, true);
+      assert.equal(capturedInclude._count, undefined);
+    });
+
+    it("SEC-21: updateCameraConfig and clearCameraConfig should record audit logs", async () => {
+      let recordedAuditLogs: any[] = [];
+      const mockAudit = {
+        recordLog: async (log: any) => {
+          recordedAuditLogs.push(log);
+        },
+      };
+
+      const mockRepo = {
+        findCameraById: async (id: string) => ({ id, name: "AI Cam", siteId: "site-1" }),
+        upsertCameraConfig: async (id: string, data: any) => ({ cameraId: id, ...data }),
+      } as unknown as CameraRepository;
+
+      const service = new CameraService(mockRepo, mockAudit);
+      await service.updateCameraConfig("cam-ai-1", { processingEnabled: false, captureFps: 5 }, "operator-1");
+
+      assert.equal(recordedAuditLogs.length, 1);
+      assert.equal(recordedAuditLogs[0].action, AUDIT_ACTION.UPDATE_PPE_CAMERA_SAFETY_CONFIG);
+      assert.equal(recordedAuditLogs[0].actorId, "operator-1");
+      assert.equal(recordedAuditLogs[0].targetId, "cam-ai-1");
+      assert.equal(recordedAuditLogs[0].details.processingEnabled, false);
+
+      await service.clearCameraConfig("cam-ai-1", "operator-1");
+      assert.equal(recordedAuditLogs.length, 2);
+      assert.equal(recordedAuditLogs[1].action, AUDIT_ACTION.DELETE_PPE_CAMERA_SAFETY_CONFIG);
+    });
+
+    it("SEC-22: deleteCameraStream should prevent deletion of the camera's only stream", async () => {
+      const mockRepo = {
+        findCameraStreamById: async (id: string) => ({
+          id,
+          cameraId: "cam-single-stream",
+          camera: { id: "cam-single-stream", siteId: "site-1" },
+        }),
+        findStreamsByCameraId: async (cameraId: string) => [
+          { id: "stream-only", cameraId },
+        ],
+        findCameraById: async (id: string) => ({ id, siteId: "site-1" }),
+        deleteCameraStream: async (id: string) => ({ id }),
+      } as unknown as CameraRepository;
+
+      const service = new CameraService(mockRepo);
+
+      // Deleting the only stream should be rejected with 400 BAD_REQUEST
+      await assert.rejects(
+        async () => {
+          await service.deleteCameraStream("stream-only");
+        },
+        (err: any) => {
+          assert.ok(err instanceof AppError);
+          assert.equal(err.statusCode, 400);
+          assert.equal(err.code, ERROR_CODE.BAD_REQUEST);
+          assert.ok(err.message.includes("Không thể xóa luồng stream duy nhất"));
+          return true;
+        },
+      );
+
+      // Deleting when there are 2 streams should succeed
+      let deletedStreamId: string | null = null;
+      const multiStreamRepo = {
+        findCameraStreamById: async (id: string) => ({
+          id,
+          cameraId: "cam-multi-stream",
+          camera: { id: "cam-multi-stream", siteId: "site-1" },
+        }),
+        findStreamsByCameraId: async (cameraId: string) => [
+          { id: "stream-primary", cameraId },
+          { id: "stream-secondary", cameraId },
+        ],
+        findCameraById: async (id: string) => ({ id, siteId: "site-1" }),
+        deleteCameraStream: async (id: string) => {
+          deletedStreamId = id;
+          return { id };
+        },
+      } as unknown as CameraRepository;
+
+      const multiService = new CameraService(multiStreamRepo);
+      const res = await multiService.deleteCameraStream("stream-secondary");
+      assert.equal(res.id, "stream-secondary");
+      assert.equal(deletedStreamId, "stream-secondary");
     });
   });
 });
