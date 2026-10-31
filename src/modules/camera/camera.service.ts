@@ -1,3 +1,4 @@
+import * as net from "net";
 import { CameraRepository, cameraRepository } from "./camera.repository";
 import { AppError } from "../../common/errors/app-error";
 import { ERROR_CODE } from "../../common/errors/error-code";
@@ -68,13 +69,100 @@ export interface CameraAuditLogger {
   }): Promise<any>;
 }
 
+export interface StreamPingResult {
+  reachable: boolean;
+  latencyMs: number | null;
+  errorMessage?: string | null;
+}
+
+export type StreamPinger = (
+  streamUrl: string,
+  timeoutMs?: number,
+) => Promise<StreamPingResult>;
+
+/**
+ * SEC-25: Kiểm tra kết nối TCP socket thực tế tới camera stream endpoint (host:port)
+ * thay vì sinh số ngẫu nhiên giả mạo trạng thái ONLINE.
+ */
+export async function probeStreamConnection(
+  streamUrl: string,
+  timeoutMs = 2000,
+): Promise<StreamPingResult> {
+  const startTime = Date.now();
+  try {
+    const parsed = new URL(streamUrl);
+    const host = parsed.hostname;
+    let port = parsed.port ? parseInt(parsed.port, 10) : undefined;
+    if (!port || Number.isNaN(port)) {
+      if (parsed.protocol === "http:" || parsed.protocol === "ws:") {
+        port = 80;
+      } else if (parsed.protocol === "https:" || parsed.protocol === "wss:") {
+        port = 443;
+      } else {
+        port = 554;
+      }
+    }
+
+    return await new Promise<StreamPingResult>((resolve) => {
+      const socket = new net.Socket();
+      let settled = false;
+
+      const finish = (result: StreamPingResult) => {
+        if (!settled) {
+          settled = true;
+          socket.removeAllListeners();
+          socket.destroy();
+          resolve(result);
+        }
+      };
+
+      socket.setTimeout(timeoutMs);
+
+      socket.once("connect", () => {
+        const latencyMs = Math.max(1, Date.now() - startTime);
+        finish({ reachable: true, latencyMs, errorMessage: null });
+      });
+
+      socket.once("timeout", () => {
+        finish({
+          reachable: false,
+          latencyMs: null,
+          errorMessage: `Kết nối tới camera stream quá thời gian chờ (${timeoutMs}ms)`,
+        });
+      });
+
+      socket.once("error", (err) => {
+        finish({
+          reachable: false,
+          latencyMs: null,
+          errorMessage: `Không thể kết nối tới stream camera: ${err.message}`,
+        });
+      });
+
+      socket.connect(port, host);
+    });
+  } catch (err: any) {
+    return {
+      reachable: false,
+      latencyMs: null,
+      errorMessage: `Lỗi phân tích URL stream: ${err.message || String(err)}`,
+    };
+  }
+}
+
 export class CameraService {
   private readonly repository: CameraRepository;
   private readonly audit?: CameraAuditLogger;
+  private readonly pinger: StreamPinger;
 
-  constructor(repository?: CameraRepository, audit?: CameraAuditLogger) {
+  constructor(
+    repository?: CameraRepository,
+    audit?: CameraAuditLogger,
+    pinger?: StreamPinger,
+  ) {
     this.repository = repository || cameraRepository;
     this.audit = audit;
+    this.pinger = pinger || probeStreamConnection;
   }
 
   // ── Camera Operations ──────────────────────────────────────────────────────
@@ -258,26 +346,66 @@ export class CameraService {
   // ── Health Probe & Ping Operations ─────────────────────────────────────────
   async pingCamera(id: string): Promise<PingCameraResultDto> {
     const camera = await this.findCameraById(id);
-
     const checkedAt = new Date();
-    // Giữ nguyên trạng thái nếu camera đang trong chế độ bảo trì
-    let status: CameraStatus =
-      camera.status === CAMERA_STATUS.MAINTENANCE
-        ? CAMERA_STATUS.MAINTENANCE
-        : CAMERA_STATUS.ONLINE;
-    let latencyMs: number | null = Math.floor(Math.random() * 35) + 10; // Giả lập ping phản hồi stream từ 10ms đến 45ms
-    let errorMessage: string | null = null;
-    let success = true;
 
     // Kiểm tra định dạng cơ bản của streamUrl
     if (!camera.streamUrl || camera.streamUrl.trim().length === 0) {
-      status = CAMERA_STATUS.ERROR;
-      latencyMs = null;
-      errorMessage = "Stream URL rỗng hoặc không hợp lệ";
-      success = false;
+      const status: CameraStatus =
+        camera.status === CAMERA_STATUS.MAINTENANCE
+          ? CAMERA_STATUS.MAINTENANCE
+          : CAMERA_STATUS.ERROR;
+      const latencyMs = null;
+      const errorMessage = "Stream URL rỗng hoặc không hợp lệ";
+      const success = false;
+
+      await this.persistPingResult(id, status, latencyMs, errorMessage);
+
+      return {
+        cameraId: id,
+        status,
+        latencyMs,
+        success,
+        errorMessage,
+        checkedAt,
+      };
     }
 
-    // Cập nhật trạng thái camera và ghi health log nguyên tử qua transaction
+    // SEC-25: Kiểm tra kết nối TCP socket thực tế tới camera stream thay vì mock ngẫu nhiên
+    const probe = await this.pinger(camera.streamUrl, 2000);
+
+    let status: CameraStatus;
+    if (camera.status === CAMERA_STATUS.MAINTENANCE) {
+      status = CAMERA_STATUS.MAINTENANCE;
+    } else if (probe.reachable) {
+      status = CAMERA_STATUS.ONLINE;
+    } else {
+      status = CAMERA_STATUS.OFFLINE;
+    }
+
+    const latencyMs = probe.reachable ? probe.latencyMs : null;
+    const errorMessage = probe.reachable
+      ? null
+      : probe.errorMessage || "Không thể kết nối tới stream camera";
+    const success = probe.reachable;
+
+    await this.persistPingResult(id, status, latencyMs, errorMessage);
+
+    return {
+      cameraId: id,
+      status,
+      latencyMs,
+      success,
+      errorMessage,
+      checkedAt,
+    };
+  }
+
+  private async persistPingResult(
+    id: string,
+    status: CameraStatus,
+    latencyMs: number | null,
+    errorMessage?: string | null,
+  ) {
     if (typeof (this.repository as any).recordPingResult === "function") {
       await (this.repository as any).recordPingResult(id, status, {
         cameraId: id,
@@ -296,15 +424,6 @@ export class CameraService {
         }),
       ]);
     }
-
-    return {
-      cameraId: id,
-      status,
-      latencyMs,
-      success,
-      errorMessage,
-      checkedAt,
-    };
   }
 
   async findHealthLogs(query: CameraHealthLogQueryDto) {

@@ -276,7 +276,12 @@ describe("Task BE-05: PPE Camera Management Service Suite", () => {
         },
       } as unknown as CameraRepository;
 
-      const service = new CameraService(mockRepo);
+      const mockPinger = async () => ({
+        reachable: true,
+        latencyMs: 25,
+        errorMessage: null,
+      });
+      const service = new CameraService(mockRepo, undefined, mockPinger);
       const pingResult = await service.pingCamera("cam-uuid-1");
 
       assert.equal(pingResult.success, true);
@@ -303,7 +308,12 @@ describe("Task BE-05: PPE Camera Management Service Suite", () => {
         createHealthLog: async (data: any) => ({ id: "log-2", ...data }),
       } as unknown as CameraRepository;
 
-      const service = new CameraService(mockRepo);
+      const mockPinger = async () => ({
+        reachable: true,
+        latencyMs: 30,
+        errorMessage: null,
+      });
+      const service = new CameraService(mockRepo, undefined, mockPinger);
       const pingResult = await service.pingCamera("cam-uuid-maintenance");
 
       assert.equal(pingResult.status, CAMERA_STATUS.MAINTENANCE);
@@ -492,6 +502,90 @@ describe("Task BE-05: PPE Camera Management Service Suite", () => {
       // Camera entity update payload must NOT contain the masked streamUrl
       assert.equal(cameraUpdateData.streamUrl, undefined);
       assert.equal(cameraUpdateData.name, "Renamed Camera");
+    });
+
+    it("SEC-17: updateCameraStream should omit masked streamUrl (:***@) to protect sub-stream credentials", async () => {
+      let updatedData: any = null;
+      const mockDb: any = {
+        cameraStream: {
+          update: async ({ data }: any) => {
+            updatedData = data;
+            return { id: "stream-1", ...data };
+          },
+        },
+      };
+
+      const repo = new CameraRepository(mockDb);
+      await repo.updateCameraStream("stream-1", {
+        resolution: "1920x1080",
+        streamUrl: "rtsp://admin:***@192.168.1.50:554/live/sub",
+      });
+
+      assert.equal(updatedData.streamUrl, undefined);
+      assert.equal(updatedData.resolution, "1920x1080");
+    });
+
+    it("SEC-18: streamUrlSchema should reject cloud metadata and loopback addresses", async () => {
+      const { streamUrlSchema } = await import("../src/modules/camera/camera.validation");
+
+      // AWS/Azure/GCP link-local metadata
+      const resMetadata = streamUrlSchema.safeParse("http://169.254.169.254/latest/meta-data");
+      assert.equal(resMetadata.success, false);
+
+      // GCP internal metadata host
+      const resGcp = streamUrlSchema.safeParse("http://metadata.google.internal/computeMetadata/v1/");
+      assert.equal(resGcp.success, false);
+
+      // Loopback IPv4
+      const resLoopback = streamUrlSchema.safeParse("rtsp://127.0.0.1:554/live");
+      assert.equal(resLoopback.success, false);
+
+      // Localhost
+      const resLocalhost = streamUrlSchema.safeParse("rtsp://localhost:554/live");
+      assert.equal(resLocalhost.success, false);
+
+      // Valid LAN RTSP camera must pass
+      const resLan = streamUrlSchema.safeParse("rtsp://admin:secret@192.168.1.100:554/live");
+      assert.equal(resLan.success, true);
+    });
+
+    it("SEC-25: pingCamera should mark camera as OFFLINE when stream endpoint is unreachable", async () => {
+      let updatedStatus: any = null;
+      let loggedData: any = null;
+
+      const mockRepo = {
+        findCameraById: async (id: string) => ({
+          id,
+          name: "Broken Camera",
+          status: CAMERA_STATUS.ONLINE,
+          streamUrl: "rtsp://192.168.1.99:554/broken",
+        }),
+        updateCameraStatus: async (id: string, status: string) => {
+          updatedStatus = status;
+          return { id, status };
+        },
+        createHealthLog: async (data: any) => {
+          loggedData = data;
+          return { id: "log-3", ...data };
+        },
+      } as unknown as CameraRepository;
+
+      const failingPinger = async () => ({
+        reachable: false,
+        latencyMs: null,
+        errorMessage: "Connection refused",
+      });
+
+      const service = new CameraService(mockRepo, undefined, failingPinger);
+      const pingResult = await service.pingCamera("cam-broken-1");
+
+      assert.equal(pingResult.success, false);
+      assert.equal(pingResult.status, CAMERA_STATUS.OFFLINE);
+      assert.equal(pingResult.latencyMs, null);
+      assert.equal(pingResult.errorMessage, "Connection refused");
+      assert.equal(updatedStatus, CAMERA_STATUS.OFFLINE);
+      assert.equal(loggedData.status, CAMERA_STATUS.OFFLINE);
+      assert.equal(loggedData.errorMessage, "Connection refused");
     });
   });
 });

@@ -122,6 +122,26 @@ export function isPrivateOrReservedHost(hostname: string): boolean {
   return false;
 }
 
+/**
+ * Kiểm tra xem hostname có trỏ tới địa chỉ cloud metadata (169.254.x.x, metadata.google.internal)
+ * hoặc loopback address (localhost, 127.0.0.1, ::1) hay không (phục vụ chống SSRF trên streamUrl).
+ */
+export function isCloudMetadataOrLoopbackHost(hostname: string): boolean {
+  if (!hostname) return true;
+  const host = hostname.toLowerCase().trim();
+  if (host === "localhost" || host === "0.0.0.0" || host === "127.0.0.1" || host === "::1") {
+    return true;
+  }
+  if (host === "metadata.google.internal" || host.endsWith(".internal")) {
+    return true;
+  }
+  const cleanIp = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  if (/^127\./.test(cleanIp)) return true;
+  if (/^169\.254\./.test(cleanIp)) return true;
+  if (cleanIp === "fd00:ec2::254") return true;
+  return false;
+}
+
 export interface IsPublicHttpUrlOptions {
   /**
    * Nếu `true`, bỏ qua kiểm tra private IP / loopback.

@@ -285,9 +285,14 @@ export class CameraRepository {
   }
 
   async updateCameraStream(id: string, data: UpdateCameraStreamDto) {
+    const updateData: any = { ...data };
+    // SEC-17: If streamUrl contains masked credentials (:***@), do not overwrite real password in DB
+    if (typeof updateData.streamUrl === "string" && updateData.streamUrl.includes(":***@")) {
+      delete updateData.streamUrl;
+    }
     return (this.db as any).cameraStream.update({
       where: { id },
-      data,
+      data: updateData,
     });
   }
 

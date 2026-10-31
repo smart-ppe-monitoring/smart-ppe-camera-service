@@ -5,6 +5,7 @@ import {
   STREAM_PROTOCOL,
   STREAM_STATUS,
 } from "../../common/constants/camera.constant";
+import { isCloudMetadataOrLoopbackHost } from "../../common/helpers/url.helper";
 
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -24,6 +25,24 @@ export const streamIdParamSchema = z.object({
 
 const CODE_REGEX = /^[A-Z0-9_-]+$/i;
 const STREAM_URL_REGEX = /^(rtsp|rtsps|http|https|hls|ws|wss):\/\/.+/i;
+
+export const streamUrlSchema = z
+  .string({ required_error: "Đường dẫn stream là bắt buộc" })
+  .trim()
+  .min(3, "Đường dẫn stream phải có ít nhất 3 ký tự")
+  .max(1000, "Đường dẫn stream không được vượt quá 1000 ký tự")
+  .regex(
+    STREAM_URL_REGEX,
+    "Đường dẫn stream phải bắt đầu bằng giao thức hợp lệ (rtsp, rtsps, http, https, hls, ws, wss)",
+  )
+  .refine((url) => {
+    try {
+      const parsed = new URL(url);
+      return !isCloudMetadataOrLoopbackHost(parsed.hostname);
+    } catch {
+      return false;
+    }
+  }, "Đường dẫn stream không được trỏ đến địa chỉ cloud metadata hoặc loopback");
 
 // ── Camera Schemas ───────────────────────────────────────────────────────────
 export const createCameraSchema = z.object({
@@ -51,15 +70,7 @@ export const createCameraSchema = z.object({
       { errorMap: () => ({ message: "Loại nguồn stream không hợp lệ" }) },
     )
     .optional(),
-  streamUrl: z
-    .string({ required_error: "Đường dẫn stream (streamUrl) là bắt buộc" })
-    .trim()
-    .min(3, "Đường dẫn stream phải có ít nhất 3 ký tự")
-    .max(1000, "Đường dẫn stream không được vượt quá 1000 ký tự")
-    .regex(
-      STREAM_URL_REGEX,
-      "Đường dẫn stream phải bắt đầu bằng giao thức hợp lệ (rtsp, rtsps, http, https, hls, ws, wss)",
-    ),
+  streamUrl: streamUrlSchema,
   status: z
     .enum(
       [
@@ -119,15 +130,7 @@ export const createCameraStreamSchema = z.object({
       errorMap: () => ({ message: "Giao thức stream không hợp lệ" }),
     })
     .optional(),
-  streamUrl: z
-    .string({ required_error: "Đường dẫn stream là bắt buộc" })
-    .trim()
-    .min(3)
-    .max(1000)
-    .regex(
-      STREAM_URL_REGEX,
-      "Đường dẫn stream phải bắt đầu bằng giao thức hợp lệ (rtsp, rtsps, http, https, hls, ws, wss)",
-    ),
+  streamUrl: streamUrlSchema,
   resolution: z
     .string()
     .trim()
