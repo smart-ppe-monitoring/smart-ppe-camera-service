@@ -178,16 +178,21 @@ export class CameraRepository {
       updateData.code = data.code.toUpperCase();
     }
 
+    // SEC-04: If streamUrl contains masked credentials (:***@), do not overwrite real password in DB
     if (data.streamUrl) {
-      const firstStream = await (this.db as any).cameraStream.findFirst({
-        where: { cameraId: id },
-        orderBy: { createdAt: "asc" },
-      });
-      if (firstStream) {
-        await (this.db as any).cameraStream.update({
-          where: { id: firstStream.id },
-          data: { streamUrl: data.streamUrl },
+      if (data.streamUrl.includes(":***@")) {
+        delete updateData.streamUrl;
+      } else {
+        const firstStream = await (this.db as any).cameraStream.findFirst({
+          where: { cameraId: id },
+          orderBy: { createdAt: "asc" },
         });
+        if (firstStream) {
+          await (this.db as any).cameraStream.update({
+            where: { id: firstStream.id },
+            data: { streamUrl: data.streamUrl },
+          });
+        }
       }
     }
 

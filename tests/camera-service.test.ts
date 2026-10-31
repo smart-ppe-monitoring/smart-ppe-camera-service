@@ -366,4 +366,132 @@ describe("Task BE-05: PPE Camera Management Service Suite", () => {
       assert.ok(routePaths.includes("/"));
     });
   });
+
+  // ── 6. Security Patches Suite (SEC-01 – SEC-04) ───────────────────────────
+  describe("6. Security Patches Suite (SEC-01 – SEC-04)", () => {
+    it("SEC-01: authMiddleware should reject unauthenticated requests even if x-gateway-secret is present", async () => {
+      const { authMiddleware } = await import("../src/middlewares/auth.middleware");
+      let capturedError: any = null;
+      const mockReq: any = {
+        headers: { "x-gateway-secret": "test-secret" },
+        cookies: {},
+        query: {},
+      };
+      const mockRes: any = {};
+      await authMiddleware(mockReq, mockRes, (err?: any) => {
+        capturedError = err;
+      });
+
+      assert.ok(capturedError instanceof AppError);
+      assert.equal(capturedError.statusCode, 401);
+      assert.equal(mockReq.user, undefined);
+    });
+
+    it("SEC-02: authMiddleware should reject tokens with purpose !== ACCESS (e.g. 2FA_VERIFICATION)", async () => {
+      const crypto = await import("node:crypto");
+      const jwt = (await import("jsonwebtoken")).default;
+      const { jwtConfig } = await import("../src/config/jwt.config");
+      const { authMiddleware } = await import("../src/middlewares/auth.middleware");
+
+      // Generate a test RSA pair
+      const { privateKey, publicKey } = crypto.generateKeyPairSync("rsa", {
+        modulusLength: 2048,
+        publicKeyEncoding: { type: "spki", format: "pem" },
+        privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      });
+
+      const originalPublicKey = jwtConfig.publicKey;
+      (jwtConfig as any).publicKey = publicKey;
+
+      try {
+        const tempToken = jwt.sign(
+          {
+            id: "user-1",
+            role: "ADMIN",
+            purpose: "2FA_VERIFICATION",
+          },
+          privateKey,
+          { algorithm: "RS256", expiresIn: "5m" },
+        );
+
+        let capturedError: any = null;
+        const mockReq: any = {
+          headers: { authorization: `Bearer ${tempToken}` },
+          cookies: {},
+          query: {},
+        };
+        const mockRes: any = {};
+
+        await authMiddleware(mockReq, mockRes, (err?: any) => {
+          capturedError = err;
+        });
+
+        assert.ok(capturedError instanceof AppError);
+        assert.equal(capturedError.statusCode, 401);
+        assert.equal(mockReq.user, undefined);
+      } finally {
+        (jwtConfig as any).publicKey = originalPublicKey;
+      }
+    });
+
+    it("SEC-03: requirePermission should enforce restricted permissions on Admin API keys", async () => {
+      const { requirePermission } = await import("../src/middlewares/permission.middleware");
+      let capturedError: any = null;
+      const mockReq: any = {
+        user: {
+          id: "admin-user-id",
+          role: "ADMIN",
+          permissions: [],
+        },
+        apiKey: {
+          id: "key-1",
+          name: "Health Monitor Bot",
+          prefix: "ppe_key",
+          permissions: [PERMISSIONS.PPE_CAMERA_READ], // Read-only scope
+        },
+      };
+      const mockRes: any = {};
+      const guard = requirePermission(PERMISSIONS.PPE_CAMERA_MANAGE);
+
+      guard(mockReq, mockRes, (err?: any) => {
+        capturedError = err;
+      });
+
+      assert.ok(capturedError instanceof AppError);
+      assert.equal(capturedError.statusCode, 403);
+      assert.equal(capturedError.code, ERROR_CODE.FORBIDDEN);
+    });
+
+    it("SEC-04: updateCamera should omit masked streamUrl (:***@) to protect real camera credentials", async () => {
+      let streamUpdated = false;
+      let cameraUpdateData: any = null;
+
+      const mockDb: any = {
+        cameraStream: {
+          findFirst: async () => ({ id: "stream-id-1", streamUrl: "rtsp://admin:RealSecretPassword123@192.168.1.50:554/live" }),
+          update: async () => {
+            streamUpdated = true;
+          },
+        },
+        camera: {
+          update: async ({ data }: any) => {
+            cameraUpdateData = data;
+            return { id: "cam-1", ...data };
+          },
+        },
+      };
+
+      const repo = new CameraRepository(mockDb);
+      await repo.updateCamera("cam-1", {
+        name: "Renamed Camera",
+        streamUrl: "rtsp://admin:***@192.168.1.50:554/live",
+      });
+
+      // Stream sub-entity must NOT be updated with asterisks
+      assert.equal(streamUpdated, false);
+      // Camera entity update payload must NOT contain the masked streamUrl
+      assert.equal(cameraUpdateData.streamUrl, undefined);
+      assert.equal(cameraUpdateData.name, "Renamed Camera");
+    });
+  });
 });
