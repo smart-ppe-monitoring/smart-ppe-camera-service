@@ -68,11 +68,18 @@ export interface UpdateCameraStreamDto {
 }
 
 // ── Camera Config DTOs ───────────────────────────────────────────────────────
+export interface RoiPointDto {
+  x: number;
+  y: number;
+}
+
 export interface UpdateCameraConfigDto {
   enabled?: boolean;
   captureFps?: number;
   resolution?: string;
   processingEnabled?: boolean;
+  roiPolygon?: RoiPointDto[] | null;
+  motionSensitivity?: number;
 }
 
 // ── Camera Health & Ping DTOs ────────────────────────────────────────────────

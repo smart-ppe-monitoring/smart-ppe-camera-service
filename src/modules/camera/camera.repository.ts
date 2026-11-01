@@ -310,8 +310,27 @@ export class CameraRepository {
           data.processingEnabled !== undefined
             ? data.processingEnabled
             : DEFAULT_CAMERA_CONFIG.processingEnabled,
+        roiPolygon:
+          data.roiPolygon !== undefined ? (data.roiPolygon as any) : undefined,
+        motionSensitivity:
+          data.motionSensitivity !== undefined
+            ? data.motionSensitivity
+            : DEFAULT_CAMERA_CONFIG.motionSensitivity,
       },
-      update: data,
+      update: {
+        ...(data.enabled !== undefined && { enabled: data.enabled }),
+        ...(data.captureFps !== undefined && { captureFps: data.captureFps }),
+        ...(data.resolution !== undefined && { resolution: data.resolution }),
+        ...(data.processingEnabled !== undefined && {
+          processingEnabled: data.processingEnabled,
+        }),
+        ...(data.roiPolygon !== undefined && {
+          roiPolygon: data.roiPolygon as any,
+        }),
+        ...(data.motionSensitivity !== undefined && {
+          motionSensitivity: data.motionSensitivity,
+        }),
+      },
     });
   }
 

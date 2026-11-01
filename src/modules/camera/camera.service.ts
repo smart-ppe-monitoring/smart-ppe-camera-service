@@ -447,6 +447,7 @@ export class CameraService {
         captureFps: DEFAULT_CAMERA_CONFIG.captureFps,
         resolution: DEFAULT_CAMERA_CONFIG.resolution,
         processingEnabled: DEFAULT_CAMERA_CONFIG.processingEnabled,
+        motionSensitivity: DEFAULT_CAMERA_CONFIG.motionSensitivity,
       });
     }
 
@@ -505,6 +506,8 @@ export class CameraService {
               captureFps: existingConfig.captureFps,
               resolution: existingConfig.resolution,
               processingEnabled: existingConfig.processingEnabled,
+              roiPolygon: existingConfig.roiPolygon,
+              motionSensitivity: existingConfig.motionSensitivity,
             }
           : null,
       },
@@ -531,6 +534,8 @@ export class CameraService {
       captureFps: DEFAULT_CAMERA_CONFIG.captureFps,
       resolution: DEFAULT_CAMERA_CONFIG.resolution,
       processingEnabled: DEFAULT_CAMERA_CONFIG.processingEnabled,
+      roiPolygon: null,
+      motionSensitivity: DEFAULT_CAMERA_CONFIG.motionSensitivity,
     });
 
     await this.audit?.recordLog({

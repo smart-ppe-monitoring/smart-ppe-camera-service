@@ -39,9 +39,11 @@ export const DEFAULT_CAMERA_CONFIG = {
   RESOLUTION: "1920x1080",
   ENABLED: true,
   PROCESSING_ENABLED: true,
+  MOTION_SENSITIVITY: 75,
 
   captureFps: 10,
   resolution: "1920x1080",
   enabled: true,
   processingEnabled: true,
+  motionSensitivity: 75,
 } as const;
