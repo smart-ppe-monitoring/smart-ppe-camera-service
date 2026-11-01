@@ -153,6 +153,77 @@ describe("Task BE-05: PPE Camera Management Service Suite", () => {
       assert.equal(validResult.success, true);
     });
 
+    it("should validate and accept roiPolygon and motionSensitivity in updateCameraConfigSchema", () => {
+      // 1. motionSensitivity hợp lệ (1-100)
+      const validSensitivity = updateCameraConfigSchema.safeParse({ motionSensitivity: 85 });
+      assert.equal(validSensitivity.success, true);
+
+      // 2. motionSensitivity ngoài khoảng
+      const invalidLowSensitivity = updateCameraConfigSchema.safeParse({ motionSensitivity: 0 });
+      assert.equal(invalidLowSensitivity.success, false);
+      const invalidHighSensitivity = updateCameraConfigSchema.safeParse({ motionSensitivity: 105 });
+      assert.equal(invalidHighSensitivity.success, false);
+
+      // 3. roiPolygon hợp lệ (>= 3 điểm)
+      const validPolygon = updateCameraConfigSchema.safeParse({
+        roiPolygon: [
+          { x: 10, y: 10 },
+          { x: 100, y: 20 },
+          { x: 80, y: 150 },
+        ],
+      });
+      assert.equal(validPolygon.success, true);
+
+      // 4. roiPolygon null hoặc mảng rỗng (để xóa ROI)
+      const nullPolygon = updateCameraConfigSchema.safeParse({ roiPolygon: null });
+      assert.equal(nullPolygon.success, true);
+      const emptyPolygon = updateCameraConfigSchema.safeParse({ roiPolygon: [] });
+      assert.equal(emptyPolygon.success, true);
+
+      // 5. roiPolygon thiếu điểm (< 3 điểm)
+      const invalidPolygon = updateCameraConfigSchema.safeParse({
+        roiPolygon: [
+          { x: 0, y: 0 },
+          { x: 10, y: 10 },
+        ],
+      });
+      assert.equal(invalidPolygon.success, false);
+
+      // 6. roiPolygon có tọa độ âm
+      const negativePolygon = updateCameraConfigSchema.safeParse({
+        roiPolygon: [
+          { x: -5, y: 10 },
+          { x: 100, y: 20 },
+          { x: 80, y: 150 },
+        ],
+      });
+      assert.equal(negativePolygon.success, false);
+
+      // 7. roiPolygon vượt quá 50 điểm tọa độ (chống DoS / payload bloat)
+      const oversizedPolygon = Array.from({ length: 51 }, (_, i) => ({ x: i, y: i }));
+      const rejectedOversized = updateCameraConfigSchema.safeParse({ roiPolygon: oversizedPolygon });
+      assert.equal(rejectedOversized.success, false);
+
+      // 8. roiPolygon có tọa độ vượt quá giới hạn 10000 hoặc không hữu hạn
+      const overflowPolygon = updateCameraConfigSchema.safeParse({
+        roiPolygon: [
+          { x: 10001, y: 10 },
+          { x: 100, y: 20 },
+          { x: 80, y: 150 },
+        ],
+      });
+      assert.equal(overflowPolygon.success, false);
+
+      const nonFinitePolygon = updateCameraConfigSchema.safeParse({
+        roiPolygon: [
+          { x: Infinity, y: 10 },
+          { x: 100, y: 20 },
+          { x: 80, y: 150 },
+        ],
+      });
+      assert.equal(nonFinitePolygon.success, false);
+    });
+
     it("should reject invalid resolution format in camera stream schema", () => {
       const invalidResolution = {
         streamUrl: "rtsp://example.com/sub",
@@ -282,6 +353,35 @@ describe("Task BE-05: PPE Camera Management Service Suite", () => {
       assert.equal(config.captureFps, 10);
       assert.equal(config.resolution, "1920x1080");
       assert.equal(config.enabled, true);
+      assert.equal(config.motionSensitivity, 75);
+    });
+
+    it("should update camera config with roiPolygon and motionSensitivity", async () => {
+      let passedData: any = null;
+      const mockRepo = {
+        findCameraById: async (id: string) => ({ id, name: "Cam 1", code: "CAM-01" }),
+        upsertCameraConfig: async (cameraId: string, data: any) => {
+          passedData = { cameraId, ...data };
+          return { id: "cfg-1", ...passedData };
+        },
+      } as unknown as CameraRepository;
+
+      const service = new CameraService(mockRepo);
+      const polygon = [
+        { x: 10, y: 10 },
+        { x: 100, y: 20 },
+        { x: 80, y: 150 },
+      ];
+      const result = await service.updateCameraConfig("cam-uuid-1", {
+        roiPolygon: polygon,
+        motionSensitivity: 80,
+      });
+
+      assert.equal(result.cameraId, "cam-uuid-1");
+      assert.deepEqual(result.roiPolygon, polygon);
+      assert.equal(result.motionSensitivity, 80);
+      assert.deepEqual(passedData.roiPolygon, polygon);
+      assert.equal(passedData.motionSensitivity, 80);
     });
 
     it("should execute ping probe, measure latency and log health", async () => {
@@ -1636,6 +1736,8 @@ describe("Task BE-05: PPE Camera Management Service Suite", () => {
         captureFps: 5,
         resolution: "1280x720",
         processingEnabled: false,
+        roiPolygon: [{ x: 10, y: 10 }, { x: 50, y: 50 }, { x: 10, y: 50 }],
+        motionSensitivity: 50,
       }) as any;
 
       const service = new CameraService(repo, mockAudit);
@@ -1651,6 +1753,8 @@ describe("Task BE-05: PPE Camera Management Service Suite", () => {
       assert.equal(deleteAudit.targetId, "cam-target-01");
       assert.equal(deleteAudit.details.cameraCode, "CAM-01");
       assert.equal(deleteAudit.details.previousConfig.captureFps, 5);
+      assert.equal(deleteAudit.details.previousConfig.motionSensitivity, 50);
+      assert.ok(Array.isArray(deleteAudit.details.previousConfig.roiPolygon));
 
       // 2. resetCameraConfig restores default configuration with audit log
       const resetResult = await service.resetCameraConfig("cam-target-01", "admin-1");
@@ -1658,6 +1762,8 @@ describe("Task BE-05: PPE Camera Management Service Suite", () => {
       assert.equal(resetResult.captureFps, DEFAULT_CAMERA_CONFIG.captureFps);
       assert.equal(resetResult.resolution, DEFAULT_CAMERA_CONFIG.resolution);
       assert.equal(resetResult.processingEnabled, DEFAULT_CAMERA_CONFIG.processingEnabled);
+      assert.equal(resetResult.motionSensitivity, DEFAULT_CAMERA_CONFIG.motionSensitivity);
+      assert.equal(upsertedConfig.create.roiPolygon, null);
 
       const resetAudit = recordedAuditLogs.find((l) => l.action === AUDIT_ACTION.UPDATE_PPE_CAMERA_SAFETY_CONFIG && l.details?.resetToDefault);
       assert.ok(resetAudit);

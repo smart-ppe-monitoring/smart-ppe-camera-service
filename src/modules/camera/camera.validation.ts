@@ -157,6 +157,30 @@ export const updateCameraStreamSchema = createCameraStreamSchema
   );
 
 // ── Camera Config Schemas ────────────────────────────────────────────────────
+export const roiPointSchema = z.object({
+  x: z
+    .number({ required_error: "Tọa độ X là bắt buộc" })
+    .finite("Tọa độ X phải là số hữu hạn")
+    .min(0, "Tọa độ X không được âm")
+    .max(10000, "Tọa độ X không được vượt quá 10000"),
+  y: z
+    .number({ required_error: "Tọa độ Y là bắt buộc" })
+    .finite("Tọa độ Y phải là số hữu hạn")
+    .min(0, "Tọa độ Y không được âm")
+    .max(10000, "Tọa độ Y không được vượt quá 10000"),
+});
+
+export const roiPolygonSchema = z
+  .union([
+    z
+      .array(roiPointSchema)
+      .min(3, "Đa giác ROI cần ít nhất 3 điểm tọa độ (x, y)")
+      .max(50, "Đa giác ROI không được vượt quá 50 điểm tọa độ"),
+    z.array(roiPointSchema).length(0),
+  ])
+  .nullable()
+  .optional();
+
 export const updateCameraConfigSchema = z
   .object({
     enabled: z.boolean().optional(),
@@ -172,6 +196,13 @@ export const updateCameraConfigSchema = z
       .regex(/^\d+x\d+$/, "Độ phân giải phải theo định dạng WxH (vd: 1920x1080)")
       .optional(),
     processingEnabled: z.boolean().optional(),
+    roiPolygon: roiPolygonSchema,
+    motionSensitivity: z.coerce
+      .number()
+      .int("Độ nhạy chuyển động phải là số nguyên")
+      .min(1, "Độ nhạy chuyển động tối thiểu là 1")
+      .max(100, "Độ nhạy chuyển động tối đa là 100")
+      .optional(),
   })
   .refine(
     (data) => Object.keys(data).length > 0,

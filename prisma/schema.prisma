@@ -60,6 +60,8 @@ model CameraConfig {
   captureFps        Int      @default(10) @map("capture_fps")
   resolution        String   @default("1920x1080") @db.VarChar(30)
   processingEnabled Boolean  @default(true) @map("processing_enabled")
+  roiPolygon        Json?    @map("roi_polygon")
+  motionSensitivity Int?     @default(75) @map("motion_sensitivity")
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
 
