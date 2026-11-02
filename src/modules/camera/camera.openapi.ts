@@ -207,6 +207,54 @@ export function registerCameraOpenApi(): void {
     },
   });
 
+  openapiRegistry.registerPath({
+    method: "delete",
+    path: "/cameras/{id}/config",
+    tags: ["Cameras"],
+    summary: "Xóa cấu hình AI tùy chỉnh của camera",
+    security: [{ BearerAuth: [] }],
+    request: {
+      params: cameraIdParamSchema,
+    },
+    responses: {
+      200: {
+        description: "Xóa cấu hình AI tùy chỉnh thành công",
+        content: {
+          "application/json": {
+            schema: z.object({
+              success: z.boolean(),
+              data: z.any(),
+            }),
+          },
+        },
+      },
+    },
+  });
+
+  openapiRegistry.registerPath({
+    method: "post",
+    path: "/cameras/{id}/config/reset",
+    tags: ["Cameras"],
+    summary: "Đặt lại cấu hình camera về giá trị mặc định",
+    security: [{ BearerAuth: [] }],
+    request: {
+      params: cameraIdParamSchema,
+    },
+    responses: {
+      200: {
+        description: "Đặt lại cấu hình mặc định thành công",
+        content: {
+          "application/json": {
+            schema: z.object({
+              success: z.boolean(),
+              data: z.any(),
+            }),
+          },
+        },
+      },
+    },
+  });
+
   // Streams
   openapiRegistry.registerPath({
     method: "get",
