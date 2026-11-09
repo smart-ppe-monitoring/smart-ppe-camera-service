@@ -497,6 +497,46 @@ export class CameraRepository {
       return false;
     }
   }
+
+  async getStatusCounts(siteFilter?: {
+    siteId?: string;
+    siteIds?: string[];
+  }): Promise<{
+    total: number;
+    online: number;
+    offline: number;
+  }> {
+    const where: any = { deletedAt: null };
+    if (siteFilter?.siteId) {
+      where.siteId = siteFilter.siteId;
+    } else if (siteFilter?.siteIds && siteFilter.siteIds.length > 0) {
+      where.siteId = { in: siteFilter.siteIds };
+    }
+
+    const groups = await (this.db as any).camera.groupBy({
+      by: ["status"],
+      where,
+      _count: {
+        _all: true,
+      },
+    });
+
+    let total = 0;
+    let online = 0;
+    let offline = 0;
+
+    for (const group of groups) {
+      const count = group._count?._all ?? 0;
+      total += count;
+      if (group.status === CAMERA_STATUS.ONLINE) {
+        online += count;
+      } else {
+        offline += count;
+      }
+    }
+
+    return { total, online, offline };
+  }
 }
 
 export const cameraRepository = new CameraRepository();

@@ -316,6 +316,19 @@ export class CameraController {
       next(error);
     }
   };
+
+  getStatusCounts = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const siteId = req.query.siteId as string | undefined;
+      const result = await this.service.getStatusCounts(siteId, req.user);
+      res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
 }
 
 export const cameraController = new CameraController();

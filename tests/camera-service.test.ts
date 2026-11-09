@@ -1769,5 +1769,27 @@ describe("Task BE-05: PPE Camera Management Service Suite", () => {
       assert.ok(resetAudit);
       assert.equal(resetAudit.targetId, "cam-target-01");
     });
+
+    it("should return camera status counts accurately (total, online, offline)", async () => {
+      const mockDb = {
+        camera: {
+          groupBy: async () => [
+            { status: CAMERA_STATUS.ONLINE, _count: { _all: 2 } },
+            { status: CAMERA_STATUS.OFFLINE, _count: { _all: 3 } },
+            { status: CAMERA_STATUS.ERROR, _count: { _all: 1 } },
+          ],
+        },
+      };
+
+      const repo = new CameraRepository(mockDb);
+      const service = new CameraService(repo);
+
+      const counts = await service.getStatusCounts();
+      assert.deepEqual(counts, {
+        total: 6,
+        online: 2,
+        offline: 4,
+      });
+    });
   });
 });

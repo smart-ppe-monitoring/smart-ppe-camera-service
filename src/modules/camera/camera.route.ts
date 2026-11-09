@@ -16,6 +16,7 @@ import {
   updateCameraStreamSchema,
   updateCameraConfigSchema,
   cameraHealthLogQuerySchema,
+  cameraStatusCountsQuerySchema,
 } from "./camera.validation";
 
 // ── Camera Routes (/api/v1/cameras) ──────────────────────────────────────────
@@ -27,6 +28,14 @@ cameraRouter.get(
   requirePermission(PERMISSIONS.PPE_CAMERA_READ),
   validate(cameraQuerySchema, "query"),
   cameraController.findAllCameras,
+);
+
+cameraRouter.get(
+  "/status-counts",
+  authMiddleware,
+  requirePermission(PERMISSIONS.PPE_CAMERA_READ),
+  validate(cameraStatusCountsQuerySchema, "query"),
+  cameraController.getStatusCounts,
 );
 
 cameraRouter.post(

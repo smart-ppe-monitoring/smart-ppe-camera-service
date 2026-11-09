@@ -225,3 +225,7 @@ export const cameraHealthLogQuerySchema = z.object({
     .optional(),
   sortOrder: z.enum(["asc", "desc"]).optional(),
 });
+
+export const cameraStatusCountsQuerySchema = z.object({
+  siteId: uuidSchema.optional(),
+});

@@ -10,6 +10,7 @@ import {
   streamIdParamSchema,
   updateCameraConfigSchema,
   cameraHealthLogQuerySchema,
+  cameraStatusCountsQuerySchema,
 } from "./camera.validation";
 import { z } from "zod";
 
@@ -26,6 +27,32 @@ export function registerCameraOpenApi(): void {
   openapiRegistry.register("UpdateCameraStreamRequest", updateCameraStreamSchema);
 
   // ── Cameras ────────────────────────────────────────────────────────────────
+  openapiRegistry.registerPath({
+    method: "get",
+    path: "/cameras/status-counts",
+    tags: ["Cameras"],
+    summary: "Đếm số lượng camera theo trạng thái kết nối (total, online, offline)",
+    security: [{ BearerAuth: [] }],
+    request: { query: cameraStatusCountsQuerySchema },
+    responses: {
+      200: {
+        description: "Lấy số lượng trạng thái camera thành công",
+        content: {
+          "application/json": {
+            schema: z.object({
+              success: z.boolean(),
+              data: z.object({
+                total: z.number(),
+                online: z.number(),
+                offline: z.number(),
+              }),
+            }),
+          },
+        },
+      },
+    },
+  });
+
   openapiRegistry.registerPath({
     method: "get",
     path: "/cameras",

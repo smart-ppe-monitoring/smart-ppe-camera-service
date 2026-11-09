@@ -779,6 +779,34 @@ export class CameraService {
     }
     return this.repository.findHealthLogs(query);
   }
+
+  async getStatusCounts(siteId?: string, userContext?: UserContext) {
+    const allowedSiteIds = this.getAllowedSiteIds(userContext);
+    const siteFilter: { siteId?: string; siteIds?: string[] } = {};
+
+    if (allowedSiteIds !== null) {
+      if (siteId) {
+        if (!allowedSiteIds.includes(siteId)) {
+          throw new AppError(
+            "Bạn không có quyền truy cập camera thuộc công trường này",
+            403,
+            ERROR_CODE.FORBIDDEN,
+          );
+        }
+        siteFilter.siteId = siteId;
+      } else if (allowedSiteIds.length === 1) {
+        siteFilter.siteId = allowedSiteIds[0];
+      } else if (allowedSiteIds.length > 1) {
+        siteFilter.siteIds = allowedSiteIds;
+      } else {
+        return { total: 0, online: 0, offline: 0 };
+      }
+    } else if (siteId) {
+      siteFilter.siteId = siteId;
+    }
+
+    return this.repository.getStatusCounts(siteFilter);
+  }
 }
 
 export const cameraService = new CameraService(
