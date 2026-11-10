@@ -496,4 +496,30 @@ export function registerCameraOpenApi(): void {
       },
     },
   });
+
+  // ── Diagnostics & Health Endpoints ─────────────────────────────────────────
+  openapiRegistry.registerPath({
+    method: "get",
+    path: "/cameras/health",
+    tags: ["Cameras"],
+    summary: "Kiểm tra trạng thái hoạt động của Camera Service",
+    responses: {
+      200: {
+        description: "Dịch vụ hoạt động bình thường",
+        content: {
+          "application/json": {
+            schema: z.object({
+              status: z.string().openapi({ example: "ok" }),
+              service: z.string().openapi({ example: "camera-service" }),
+              checks: z.object({
+                database: z.string().openapi({ example: "up" }),
+              }),
+              timestamp: z.string().datetime(),
+              uptime: z.number(),
+            }),
+          },
+        },
+      },
+    },
+  });
 }
