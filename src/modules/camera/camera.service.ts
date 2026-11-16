@@ -11,11 +11,15 @@ import {
   UpdateCameraConfigDto,
   CameraHealthLogQueryDto,
   PingCameraResultDto,
+  InternalActiveStreamsQueryDto,
+  InternalCameraLookupQueryDto,
+  InternalActiveCameraStreamDto,
 } from "./camera.dto";
 import {
   CAMERA_STATUS,
   CameraStatus,
   DEFAULT_CAMERA_CONFIG,
+  STREAM_STATUS,
 } from "../../common/constants/camera.constant";
 import { ROLES } from "../../common/constants/role.constant";
 import {
@@ -806,6 +810,77 @@ export class CameraService {
     }
 
     return this.repository.getStatusCounts(siteFilter);
+  }
+
+  private toInternalStreamDto(camera: any): InternalActiveCameraStreamDto {
+    const activeStream = Array.isArray(camera.streams)
+      ? camera.streams.find((s: any) => s.status === STREAM_STATUS.ACTIVE) ||
+        camera.streams[0]
+      : null;
+
+    const cfg = camera.config || {};
+    return {
+      id: camera.id,
+      siteId: camera.siteId,
+      zoneId: camera.zoneId ?? null,
+      name: camera.name,
+      code: camera.code,
+      sourceType: camera.sourceType,
+      streamUrl: camera.streamUrl || activeStream?.streamUrl || "",
+      status: camera.status,
+      config: {
+        enabled: cfg.enabled ?? DEFAULT_CAMERA_CONFIG.enabled,
+        captureFps: cfg.captureFps ?? DEFAULT_CAMERA_CONFIG.captureFps,
+        resolution: cfg.resolution ?? DEFAULT_CAMERA_CONFIG.resolution,
+        processingEnabled:
+          cfg.processingEnabled ?? DEFAULT_CAMERA_CONFIG.processingEnabled,
+        roiPolygon: Array.isArray(cfg.roiPolygon) ? cfg.roiPolygon : null,
+        motionSensitivity:
+          cfg.motionSensitivity ?? DEFAULT_CAMERA_CONFIG.motionSensitivity,
+      },
+    };
+  }
+
+  /**
+   * Truy xuất danh sách stream camera đang hoạt động kèm URL gốc (KHÔNG che mật khẩu)
+   * chỉ dành riêng cho AI Vision Engine qua M2M internal authentication.
+   */
+  async findInternalActiveStreams(
+    query: InternalActiveStreamsQueryDto = {},
+  ): Promise<InternalActiveCameraStreamDto[]> {
+    const status = query.status || CAMERA_STATUS.ONLINE;
+    const cameras = await this.repository.findInternalActiveStreams({
+      siteId: query.siteId,
+      status,
+    });
+
+    const mapped = cameras
+      .map((cam: any) => this.toInternalStreamDto(cam))
+      .filter((item: InternalActiveCameraStreamDto) => {
+        if (!item.streamUrl) return false;
+        if (query.includeDisabled) return true;
+        return item.config.enabled && item.config.processingEnabled;
+      });
+
+    return mapped;
+  }
+
+  /**
+   * Tra cứu thông tin camera nội bộ theo id hoặc code (kèm URL gốc & siteId)
+   * phục vụ đồng bộ M2M giữa AI Engine / Incident Service / Camera Service.
+   */
+  async lookupInternalCamera(
+    query: InternalCameraLookupQueryDto,
+  ): Promise<InternalActiveCameraStreamDto> {
+    const camera = await this.repository.findInternalCameraLookup(query);
+    if (!camera) {
+      throw new AppError(
+        "Không tìm thấy camera theo thông tin tra cứu nội bộ",
+        404,
+        ERROR_CODE.CAMERA_NOT_FOUND,
+      );
+    }
+    return this.toInternalStreamDto(camera);
   }
 }
 

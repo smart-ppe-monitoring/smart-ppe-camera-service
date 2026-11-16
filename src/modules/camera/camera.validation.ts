@@ -229,3 +229,32 @@ export const cameraHealthLogQuerySchema = z.object({
 export const cameraStatusCountsQuerySchema = z.object({
   siteId: uuidSchema.optional(),
 });
+
+// ── Internal Machine-to-Machine Schemas ──────────────────────────────────────
+export const internalActiveStreamsQuerySchema = z.object({
+  siteId: uuidSchema.optional(),
+  status: z
+    .enum([
+      CAMERA_STATUS.ONLINE,
+      CAMERA_STATUS.OFFLINE,
+      CAMERA_STATUS.CONNECTING,
+      CAMERA_STATUS.ERROR,
+      CAMERA_STATUS.MAINTENANCE,
+    ])
+    .optional()
+    .default(CAMERA_STATUS.ONLINE),
+  includeDisabled: z
+    .enum(["true", "false"])
+    .transform((val) => val === "true")
+    .optional()
+    .default("false"),
+});
+
+export const internalCameraLookupQuerySchema = z
+  .object({
+    id: uuidSchema.optional(),
+    code: z.string().trim().min(1).max(50).optional(),
+  })
+  .refine((data) => Boolean(data.id || data.code), {
+    message: "Cần cung cấp id hoặc code của camera để tra cứu nội bộ",
+  });

@@ -31,6 +31,12 @@ export const GATEWAY_HEADERS = {
   INTERNAL_SECRET: "x-gateway-secret",
 
   /**
+   * Token nội bộ M2M dùng để xác thực các cuộc gọi service-to-service
+   * (vd: AI Service truy xuất stream RTSP gốc hoặc đẩy vi phạm về Incident Service).
+   */
+  INTERNAL_SERVICE_TOKEN: "x-internal-service-token",
+
+  /**
    * Tên upstream service được gateway định tuyến đến.
    * Traefik inject header này cho phép service biết mình được gọi từ đâu.
    */

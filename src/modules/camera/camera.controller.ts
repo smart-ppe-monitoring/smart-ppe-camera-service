@@ -8,6 +8,8 @@ import {
   UpdateCameraStreamDto,
   UpdateCameraConfigDto,
   CameraHealthLogQueryDto,
+  InternalActiveStreamsQueryDto,
+  InternalCameraLookupQueryDto,
 } from "./camera.dto";
 
 export class CameraController {
@@ -321,6 +323,41 @@ export class CameraController {
     try {
       const siteId = req.query.siteId as string | undefined;
       const result = await this.service.getStatusCounts(siteId, req.user);
+      res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  // ── Internal Machine-to-Machine Endpoints ──────────────────────────────────
+  getInternalActiveStreams = async (
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      const query = req.query as unknown as InternalActiveStreamsQueryDto;
+      const result = await this.service.findInternalActiveStreams(query);
+      res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  lookupInternalCamera = async (
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      const query = req.query as unknown as InternalCameraLookupQueryDto;
+      const result = await this.service.lookupInternalCamera(query);
       res.json({
         success: true,
         data: result,

@@ -537,6 +537,46 @@ export class CameraRepository {
 
     return { total, online, offline };
   }
+
+  async findInternalActiveStreams(filters?: {
+    siteId?: string;
+    status?: string;
+  }) {
+    const where: any = {
+      deletedAt: null,
+      status: filters?.status || CAMERA_STATUS.ONLINE,
+    };
+    if (filters?.siteId) {
+      where.siteId = filters.siteId;
+    }
+
+    return (this.db as any).camera.findMany({
+      where,
+      include: {
+        config: true,
+        streams: true,
+      },
+      orderBy: [{ createdAt: "asc" }, { code: "asc" }],
+    });
+  }
+
+  async findInternalCameraLookup(query: { id?: string; code?: string }) {
+    const where: any = { deletedAt: null };
+    if (query.id) {
+      where.id = query.id;
+    }
+    if (query.code) {
+      where.code = query.code.trim().toUpperCase();
+    }
+
+    return (this.db as any).camera.findFirst({
+      where,
+      include: {
+        config: true,
+        streams: true,
+      },
+    });
+  }
 }
 
 export const cameraRepository = new CameraRepository();

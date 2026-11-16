@@ -15,7 +15,11 @@ import {
   updateCameraStreamSchema,
   updateCameraConfigSchema,
   cameraHealthLogQuerySchema,
+  internalActiveStreamsQuerySchema,
+  internalCameraLookupQuerySchema,
 } from "../src/modules/camera/camera.validation";
+import { createRequireInternalServiceToken } from "../src/middlewares/internal-auth.middleware";
+import { GATEWAY_HEADERS } from "../src/common/constants/gateway.constant";
 import {
   CameraService,
   cameraService,
@@ -1790,6 +1794,169 @@ describe("Task BE-05: PPE Camera Management Service Suite", () => {
         online: 2,
         offline: 4,
       });
+    });
+  });
+
+  // ── 12. Internal M2M Active Streams & Credential Isolation ─────────────────
+  describe("12. Internal M2M Active Streams & RTSP Security Isolation", () => {
+    it("should fail closed (503) when INTERNAL_SERVICE_TOKEN is not configured", () => {
+      const middleware = createRequireInternalServiceToken("");
+      const req: any = { headers: { "x-internal-service-token": "anything" } };
+      let capturedErr: any;
+      middleware(req, {} as any, (err?: any) => {
+        capturedErr = err;
+      });
+      assert.ok(capturedErr instanceof AppError);
+      assert.equal(capturedErr.statusCode, 503);
+      assert.equal(capturedErr.code, ERROR_CODE.SERVICE_UNAVAILABLE);
+    });
+
+    it("should reject missing (401) and invalid (403) internal tokens, and accept valid x-internal-service-token or Bearer token", () => {
+      const expected = "super_secret_internal_m2m_token_value_123456";
+      const middleware = createRequireInternalServiceToken(expected);
+
+      // Missing
+      let err1: any;
+      middleware({ headers: {} } as any, {} as any, (err?: any) => {
+        err1 = err;
+      });
+      assert.equal(err1?.statusCode, 401);
+
+      // Wrong token
+      let err2: any;
+      middleware(
+        { headers: { [GATEWAY_HEADERS.INTERNAL_SECRET]: "x", [GATEWAY_HEADERS.INTERNAL_SERVICE_TOKEN]: "wrong-token" } } as any,
+        {} as any,
+        (err?: any) => {
+          err2 = err;
+        },
+      );
+      assert.equal(err2?.statusCode, 403);
+
+      // Valid x-internal-service-token
+      let err3: any = "not-called";
+      middleware(
+        { headers: { [GATEWAY_HEADERS.INTERNAL_SERVICE_TOKEN]: expected } } as any,
+        {} as any,
+        (err?: any) => {
+          err3 = err;
+        },
+      );
+      assert.equal(err3, undefined);
+
+      // Valid Authorization Bearer token
+      let err4: any = "not-called";
+      middleware(
+        { headers: { authorization: `Bearer ${expected}` } } as any,
+        {} as any,
+        (err?: any) => {
+          err4 = err;
+        },
+      );
+      assert.equal(err4, undefined);
+    });
+
+    it("should validate internal active-streams & lookup schemas accurately", () => {
+      const q1 = internalActiveStreamsQuerySchema.parse({});
+      assert.equal(q1.status, CAMERA_STATUS.ONLINE);
+      assert.equal(q1.includeDisabled, false);
+
+      const q2 = internalCameraLookupQuerySchema.parse({ code: " cam-01 " });
+      assert.equal(q2.code, "cam-01");
+
+      assert.throws(() => internalCameraLookupQuerySchema.parse({}));
+    });
+
+    it("should return unmasked streamUrl in findInternalActiveStreams while findAllCameras keeps masking RTSP password", async () => {
+      const rawRtsp = "rtsp://admin:SuperSecretPass99@192.168.10.20:554/Streaming/Channels/101";
+      const mockCameras = [
+        {
+          id: "0199a001-0000-7000-8000-000000000001",
+          siteId: "0199a001-0000-7000-8000-0000000000aa",
+          zoneId: null,
+          name: "Gate Cam 1",
+          code: "CAM-01",
+          sourceType: CAMERA_SOURCE_TYPE.RTSP,
+          streamUrl: rawRtsp,
+          status: CAMERA_STATUS.ONLINE,
+          deletedAt: null,
+          config: {
+            enabled: true,
+            captureFps: 12,
+            resolution: "1920x1080",
+            processingEnabled: true,
+            roiPolygon: [
+              { x: 0.1, y: 0.2 },
+              { x: 0.9, y: 0.2 },
+              { x: 0.9, y: 0.9 },
+            ],
+            motionSensitivity: 80,
+          },
+          streams: [
+            {
+              id: "0199a001-0000-7000-8000-000000000011",
+              protocol: STREAM_PROTOCOL.RTSP,
+              streamUrl: rawRtsp,
+              status: STREAM_STATUS.ACTIVE,
+            },
+          ],
+        },
+        {
+          id: "0199a001-0000-7000-8000-000000000002",
+          siteId: "0199a001-0000-7000-8000-0000000000aa",
+          zoneId: null,
+          name: "Disabled AI Cam",
+          code: "CAM-02",
+          sourceType: CAMERA_SOURCE_TYPE.RTSP,
+          streamUrl: rawRtsp,
+          status: CAMERA_STATUS.ONLINE,
+          deletedAt: null,
+          config: {
+            enabled: true,
+            captureFps: 10,
+            resolution: "1920x1080",
+            processingEnabled: false,
+            roiPolygon: null,
+            motionSensitivity: 75,
+          },
+          streams: [],
+        },
+      ];
+
+      const mockDb = {
+        camera: {
+          findMany: async () => mockCameras,
+          count: async () => mockCameras.length,
+          findFirst: async () => mockCameras[0],
+        },
+      };
+
+      const repo = new CameraRepository(mockDb);
+      const service = new CameraService(repo);
+
+      // User-facing endpoint MUST continue masking credentials
+      const publicList = await service.findAllCameras({});
+      assert.equal(publicList.data.length, 2);
+      assert.ok(publicList.data[0].streamUrl.includes("***"));
+      assert.ok(!publicList.data[0].streamUrl.includes("SuperSecretPass99"));
+
+      // Internal endpoint MUST return raw unmasked URL & filter disabled processing
+      const internalList = await service.findInternalActiveStreams({});
+      assert.equal(internalList.length, 1);
+      assert.equal(internalList[0].code, "CAM-01");
+      assert.equal(internalList[0].streamUrl, rawRtsp);
+      assert.equal(internalList[0].config.captureFps, 12);
+      assert.equal(internalList[0].config.roiPolygon?.length, 3);
+
+      // With includeDisabled=true, both are returned
+      const internalAll = await service.findInternalActiveStreams({ includeDisabled: true });
+      assert.equal(internalAll.length, 2);
+
+      // Lookup by code also returns raw streamUrl & UUIDs
+      const lookedUp = await service.lookupInternalCamera({ code: "cam-01" });
+      assert.equal(lookedUp.id, mockCameras[0].id);
+      assert.equal(lookedUp.siteId, mockCameras[0].siteId);
+      assert.equal(lookedUp.streamUrl, rawRtsp);
     });
   });
 });

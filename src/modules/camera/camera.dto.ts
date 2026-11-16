@@ -107,3 +107,36 @@ export interface PingCameraResultDto {
   errorMessage?: string | null;
   checkedAt: string | Date;
 }
+
+// ── Internal Machine-to-Machine Stream DTOs ─────────────────────────────────
+export interface InternalActiveStreamsQueryDto {
+  siteId?: string;
+  status?: CameraStatus;
+  includeDisabled?: boolean;
+}
+
+export interface InternalCameraLookupQueryDto {
+  id?: string;
+  code?: string;
+}
+
+export interface InternalCameraConfigDto {
+  enabled: boolean;
+  captureFps: number;
+  resolution: string;
+  processingEnabled: boolean;
+  roiPolygon: RoiPointDto[] | null;
+  motionSensitivity: number;
+}
+
+export interface InternalActiveCameraStreamDto {
+  id: string;
+  siteId: string;
+  zoneId: string | null;
+  name: string;
+  code: string;
+  sourceType: CameraSourceType | string;
+  streamUrl: string;
+  status: CameraStatus | string;
+  config: InternalCameraConfigDto;
+}

@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { cameraController } from "./camera.controller";
 import { authMiddleware } from "../../middlewares/auth.middleware";
+import { requireInternalServiceToken } from "../../middlewares/internal-auth.middleware";
 import { requirePermission } from "../../middlewares/permission.middleware";
 import { validate } from "../../middlewares/validate.middleware";
 import { pingRateLimitMiddleware } from "../../middlewares/rate-limit.middleware";
@@ -17,6 +18,8 @@ import {
   updateCameraConfigSchema,
   cameraHealthLogQuerySchema,
   cameraStatusCountsQuerySchema,
+  internalActiveStreamsQuerySchema,
+  internalCameraLookupQuerySchema,
 } from "./camera.validation";
 
 // ── Camera Routes (/api/v1/cameras) ──────────────────────────────────────────
@@ -36,6 +39,21 @@ cameraRouter.get(
   requirePermission(PERMISSIONS.PPE_CAMERA_READ),
   validate(cameraStatusCountsQuerySchema, "query"),
   cameraController.getStatusCounts,
+);
+
+// Internal M2M endpoints (MUST stay before /:id param route)
+cameraRouter.get(
+  "/internal/active-streams",
+  requireInternalServiceToken,
+  validate(internalActiveStreamsQuerySchema, "query"),
+  cameraController.getInternalActiveStreams,
+);
+
+cameraRouter.get(
+  "/internal/lookup",
+  requireInternalServiceToken,
+  validate(internalCameraLookupQuerySchema, "query"),
+  cameraController.lookupInternalCamera,
 );
 
 cameraRouter.post(
