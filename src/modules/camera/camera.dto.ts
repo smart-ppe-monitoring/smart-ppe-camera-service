@@ -73,12 +73,20 @@ export interface RoiPointDto {
   y: number;
 }
 
+export interface RoiPolygonItemDto {
+  id?: string;
+  name?: string;
+  restrictedAreaId?: string | null;
+  points: RoiPointDto[];
+}
+
 export interface UpdateCameraConfigDto {
   enabled?: boolean;
   captureFps?: number;
   resolution?: string;
   processingEnabled?: boolean;
   roiPolygon?: RoiPointDto[] | null;
+  roiPolygons?: RoiPolygonItemDto[] | null;
   motionSensitivity?: number;
 }
 
@@ -126,6 +134,7 @@ export interface InternalCameraConfigDto {
   resolution: string;
   processingEnabled: boolean;
   roiPolygon: RoiPointDto[] | null;
+  roiPolygons: RoiPolygonItemDto[] | null;
   motionSensitivity: number;
 }
 

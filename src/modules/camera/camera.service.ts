@@ -14,12 +14,16 @@ import {
   InternalActiveStreamsQueryDto,
   InternalCameraLookupQueryDto,
   InternalActiveCameraStreamDto,
+  RoiPointDto,
+  RoiPolygonItemDto,
 } from "./camera.dto";
 import {
   CAMERA_STATUS,
   CameraStatus,
   DEFAULT_CAMERA_CONFIG,
   STREAM_STATUS,
+  CAMERA_ROI_LIMITS,
+  MASKED_STREAM_PASSWORD,
 } from "../../common/constants/camera.constant";
 import { ROLES } from "../../common/constants/role.constant";
 import {
@@ -42,11 +46,119 @@ export function maskStreamCredentials(url: string | null | undefined): string {
   try {
     const parsed = new URL(url);
     if (parsed.password) {
-      parsed.password = "***";
+      parsed.password = MASKED_STREAM_PASSWORD;
       return parsed.toString();
     }
   } catch {}
-  return url.replace(/:\/\/([^:\s\/]+):(.*)@([^:\/\s]+)/g, "://$1:***@$3");
+  return url.replace(
+    /:\/\/([^:\s\/]+):(.*)@([^:\/\s]+)/g,
+    `://$1:${MASKED_STREAM_PASSWORD}@$3`,
+  );
+}
+
+/**
+ * Kiểm tra xem streamUrl có chứa mật khẩu che giấu dạng `:***` hay không.
+ */
+export function hasMaskedStreamCredentials(
+  url: string | null | undefined,
+): boolean {
+  if (!url) return false;
+  if (url.includes(`:${MASKED_STREAM_PASSWORD}@`)) {
+    return true;
+  }
+  try {
+    const parsed = new URL(url);
+    if (
+      parsed.password === MASKED_STREAM_PASSWORD ||
+      decodeURIComponent(parsed.password) === MASKED_STREAM_PASSWORD
+    ) {
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
+/**
+ * Xử lý trường streamUrl khi cập nhật camera/stream:
+ * - Nếu chứa masked credentials khớp với URL hiện tại (sau khi mask) -> bỏ qua không ghi đè DB.
+ * - Nếu chứa `***` nhưng không khớp (user sửa host/user hoặc nhập `***` mới) -> trả 400 VALIDATION_ERROR.
+ */
+export function resolveStreamUrlUpdate(
+  incomingStreamUrl: string | undefined,
+  existingMaskedStreamUrl: string | null | undefined,
+): { shouldUpdate: boolean; streamUrl?: string } {
+  if (incomingStreamUrl === undefined) {
+    return { shouldUpdate: false };
+  }
+
+  const trimmed = incomingStreamUrl.trim();
+  if (hasMaskedStreamCredentials(trimmed)) {
+    const normalizedIncoming = maskStreamCredentials(trimmed);
+    const normalizedExisting = existingMaskedStreamUrl
+      ? maskStreamCredentials(existingMaskedStreamUrl.trim())
+      : "";
+
+    if (normalizedExisting && normalizedIncoming === normalizedExisting) {
+      return { shouldUpdate: false };
+    }
+
+    throw new AppError(
+      "Đường dẫn stream chứa mật khẩu che giấu ('***') không khớp với cấu hình hiện tại. Vui lòng nhập mật khẩu thực tế khi thay đổi streamUrl.",
+      400,
+      ERROR_CODE.VALIDATION_ERROR,
+    );
+  }
+
+  return { shouldUpdate: true, streamUrl: trimmed };
+}
+
+function normalizeCameraConfigUpdate(
+  data: UpdateCameraConfigDto,
+): UpdateCameraConfigDto {
+  const normalized: UpdateCameraConfigDto = { ...data };
+
+  if (data.roiPolygons !== undefined) {
+    const polygons =
+      Array.isArray(data.roiPolygons) && data.roiPolygons.length > 0
+        ? data.roiPolygons
+        : null;
+    normalized.roiPolygons = polygons;
+    normalized.roiPolygon = polygons ? polygons[0].points : null;
+  } else if (data.roiPolygon !== undefined) {
+    const single =
+      Array.isArray(data.roiPolygon) &&
+      data.roiPolygon.length >= CAMERA_ROI_LIMITS.MIN_POINTS
+        ? data.roiPolygon
+        : null;
+    normalized.roiPolygon = single;
+    normalized.roiPolygons = single ? [{ points: single }] : null;
+  }
+
+  return normalized;
+}
+
+function extractNormalizedRoi(cfg: any): {
+  roiPolygon: RoiPointDto[] | null;
+  roiPolygons: RoiPolygonItemDto[] | null;
+} {
+  const rawMulti =
+    Array.isArray(cfg?.roiPolygons) && cfg.roiPolygons.length > 0
+      ? (cfg.roiPolygons as RoiPolygonItemDto[])
+      : null;
+  const rawSingle =
+    Array.isArray(cfg?.roiPolygon) &&
+    cfg.roiPolygon.length >= CAMERA_ROI_LIMITS.MIN_POINTS
+      ? (cfg.roiPolygon as RoiPointDto[])
+      : null;
+
+  const roiPolygons = rawMulti ?? (rawSingle ? [{ points: rawSingle }] : null);
+  const roiPolygon =
+    rawSingle ??
+    (rawMulti && Array.isArray(rawMulti[0]?.points)
+      ? rawMulti[0].points
+      : null);
+
+  return { roiPolygon, roiPolygons };
 }
 
 function sanitizeCameraEntity<T extends { streamUrl?: string | null; streams?: Array<{ streamUrl?: string | null }> }>(camera: T): T {
@@ -241,6 +353,14 @@ export class CameraService {
   ) {
     this.assertSiteAccess(data.siteId, userContext);
 
+    if (hasMaskedStreamCredentials(data.streamUrl)) {
+      throw new AppError(
+        "Đường dẫn stream không được chứa mật khẩu che giấu ('***'). Vui lòng nhập mật khẩu thực tế.",
+        400,
+        ERROR_CODE.VALIDATION_ERROR,
+      );
+    }
+
     const existing = await this.repository.findCameraByCode(data.code);
     if (existing) {
       throw new AppError(
@@ -320,25 +440,44 @@ export class CameraService {
     actorId?: string,
     userContext?: UserContext,
   ) {
-    await this.findCameraById(id, userContext);
+    const existingCamera = await this.findCameraById(id, userContext);
+    const streamResolution = resolveStreamUrlUpdate(
+      data.streamUrl,
+      existingCamera.streamUrl,
+    );
 
-    if (data.code) {
-      const existing = await this.repository.findCameraByCode(data.code);
+    const updatePayload: UpdateCameraDto = { ...data };
+    if (!streamResolution.shouldUpdate) {
+      delete updatePayload.streamUrl;
+    } else if (streamResolution.streamUrl !== undefined) {
+      updatePayload.streamUrl = streamResolution.streamUrl;
+    }
+
+    if (Object.keys(updatePayload).length === 0) {
+      return existingCamera;
+    }
+
+    if (updatePayload.code) {
+      const existing = await this.repository.findCameraByCode(
+        updatePayload.code,
+      );
       if (existing && existing.id !== id) {
         throw new AppError(
-          `Camera với mã '${data.code.toUpperCase()}' đã tồn tại trong hệ thống`,
+          `Camera với mã '${updatePayload.code.toUpperCase()}' đã tồn tại trong hệ thống`,
           409,
           ERROR_CODE.DUPLICATE_ENTRY,
         );
       }
     }
 
-    const updated = await this.repository.updateCamera(id, data);
+    const updated = await this.repository.updateCamera(id, updatePayload);
 
-    // Ghi AuditLog cập nhật camera (che giấu mật khẩu stream URL nếu có)
-    const sanitizedDetails = { ...data } as Record<string, unknown>;
+    // Ghi AuditLog cập nhật camera (chỉ ghi những trường thực sự được cập nhật và che mật khẩu stream URL nếu có)
+    const sanitizedDetails = { ...updatePayload } as Record<string, unknown>;
     if (typeof sanitizedDetails.streamUrl === "string") {
-      sanitizedDetails.streamUrl = maskStreamCredentials(sanitizedDetails.streamUrl);
+      sanitizedDetails.streamUrl = maskStreamCredentials(
+        sanitizedDetails.streamUrl,
+      );
     }
 
     await this.audit?.recordLog({
@@ -446,16 +585,23 @@ export class CameraService {
 
     const config = await this.repository.findCameraConfig(cameraId);
     if (!config) {
-      return this.repository.upsertCameraConfig(cameraId, {
+      const provisioned = await this.repository.upsertCameraConfig(cameraId, {
         enabled: DEFAULT_CAMERA_CONFIG.enabled,
         captureFps: DEFAULT_CAMERA_CONFIG.captureFps,
         resolution: DEFAULT_CAMERA_CONFIG.resolution,
         processingEnabled: DEFAULT_CAMERA_CONFIG.processingEnabled,
         motionSensitivity: DEFAULT_CAMERA_CONFIG.motionSensitivity,
       });
+      return {
+        ...provisioned,
+        ...extractNormalizedRoi(provisioned),
+      };
     }
 
-    return config;
+    return {
+      ...config,
+      ...extractNormalizedRoi(config),
+    };
   }
 
   async updateCameraConfig(
@@ -465,7 +611,11 @@ export class CameraService {
     userContext?: UserContext,
   ) {
     await this.findCameraById(cameraId, userContext);
-    const updated = await this.repository.upsertCameraConfig(cameraId, data);
+    const normalizedData = normalizeCameraConfigUpdate(data);
+    const updated = await this.repository.upsertCameraConfig(
+      cameraId,
+      normalizedData,
+    );
 
     // SEC-21: Ghi AuditLog bắt buộc khi thay đổi cấu hình AI an toàn lao động
     await this.audit?.recordLog({
@@ -473,10 +623,13 @@ export class CameraService {
       action: AUDIT_ACTION.UPDATE_PPE_CAMERA_SAFETY_CONFIG,
       targetType: AUDIT_TARGET_TYPE.PPE_CAMERA,
       targetId: cameraId,
-      details: data,
+      details: normalizedData,
     });
 
-    return updated;
+    return {
+      ...updated,
+      ...extractNormalizedRoi(updated),
+    };
   }
 
   /**
@@ -511,6 +664,7 @@ export class CameraService {
               resolution: existingConfig.resolution,
               processingEnabled: existingConfig.processingEnabled,
               roiPolygon: existingConfig.roiPolygon,
+              roiPolygons: existingConfig.roiPolygons ?? null,
               motionSensitivity: existingConfig.motionSensitivity,
             }
           : null,
@@ -539,6 +693,7 @@ export class CameraService {
       resolution: DEFAULT_CAMERA_CONFIG.resolution,
       processingEnabled: DEFAULT_CAMERA_CONFIG.processingEnabled,
       roiPolygon: null,
+      roiPolygons: null,
       motionSensitivity: DEFAULT_CAMERA_CONFIG.motionSensitivity,
     });
 
@@ -550,7 +705,10 @@ export class CameraService {
       details: { resetToDefault: true },
     });
 
-    return updated;
+    return {
+      ...updated,
+      ...extractNormalizedRoi(updated),
+    };
   }
 
   // ── Camera Stream Operations ───────────────────────────────────────────────
@@ -571,6 +729,15 @@ export class CameraService {
     }
 
     await this.findCameraById(cameraId, actualUserContext);
+
+    if (hasMaskedStreamCredentials(data.streamUrl)) {
+      throw new AppError(
+        "Đường dẫn stream không được chứa mật khẩu che giấu ('***'). Vui lòng nhập mật khẩu thực tế.",
+        400,
+        ERROR_CODE.VALIDATION_ERROR,
+      );
+    }
+
     const createdStream = await this.repository.createCameraStream({
       ...data,
       cameraId,
@@ -629,10 +796,26 @@ export class CameraService {
     userContext?: UserContext,
   ) {
     const existing = await this.findCameraStreamById(id, userContext);
-    const updated = await this.repository.updateCameraStream(id, data);
+    const streamResolution = resolveStreamUrlUpdate(
+      data.streamUrl,
+      existing.streamUrl,
+    );
+
+    const updatePayload: UpdateCameraStreamDto = { ...data };
+    if (!streamResolution.shouldUpdate) {
+      delete updatePayload.streamUrl;
+    } else if (streamResolution.streamUrl !== undefined) {
+      updatePayload.streamUrl = streamResolution.streamUrl;
+    }
+
+    if (Object.keys(updatePayload).length === 0) {
+      return existing;
+    }
+
+    const updated = await this.repository.updateCameraStream(id, updatePayload);
 
     // SEC-26: Bổ sung audit log bắt buộc khi cập nhật cấu hình stream
-    const maskedDetails: Record<string, any> = { ...data };
+    const maskedDetails: Record<string, any> = { ...updatePayload };
     if (maskedDetails.streamUrl) {
       maskedDetails.streamUrl = maskStreamCredentials(maskedDetails.streamUrl);
     }
@@ -819,6 +1002,7 @@ export class CameraService {
       : null;
 
     const cfg = camera.config || {};
+    const { roiPolygon, roiPolygons } = extractNormalizedRoi(cfg);
     return {
       id: camera.id,
       siteId: camera.siteId,
@@ -834,7 +1018,8 @@ export class CameraService {
         resolution: cfg.resolution ?? DEFAULT_CAMERA_CONFIG.resolution,
         processingEnabled:
           cfg.processingEnabled ?? DEFAULT_CAMERA_CONFIG.processingEnabled,
-        roiPolygon: Array.isArray(cfg.roiPolygon) ? cfg.roiPolygon : null,
+        roiPolygon,
+        roiPolygons,
         motionSensitivity:
           cfg.motionSensitivity ?? DEFAULT_CAMERA_CONFIG.motionSensitivity,
       },

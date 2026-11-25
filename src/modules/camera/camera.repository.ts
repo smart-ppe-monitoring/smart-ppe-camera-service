@@ -24,7 +24,24 @@ import {
   STREAM_PROTOCOL,
   STREAM_STATUS,
   DEFAULT_CAMERA_CONFIG,
+  MASKED_STREAM_PASSWORD,
 } from "../../common/constants/camera.constant";
+
+function containsMaskedCredentials(url?: string): boolean {
+  if (!url) return false;
+  if (url.includes(`:${MASKED_STREAM_PASSWORD}@`)) {
+    return true;
+  }
+  try {
+    const parsed = new URL(url);
+    return (
+      parsed.password === MASKED_STREAM_PASSWORD ||
+      decodeURIComponent(parsed.password) === MASKED_STREAM_PASSWORD
+    );
+  } catch {
+    return false;
+  }
+}
 
 export class CameraRepository {
   private readonly db: typeof cameraPrisma;
@@ -184,12 +201,11 @@ export class CameraRepository {
       updateData.code = data.code.toUpperCase();
     }
 
-    const hasNewStreamUrl = Boolean(
-      data.streamUrl && !data.streamUrl.includes(":***@"),
-    );
+    const hasMaskedUrl = containsMaskedCredentials(data.streamUrl);
+    const hasNewStreamUrl = Boolean(data.streamUrl && !hasMaskedUrl);
 
     // SEC-04: If streamUrl contains masked credentials (:***@), do not overwrite real password in DB
-    if (data.streamUrl && data.streamUrl.includes(":***@")) {
+    if (hasMaskedUrl) {
       delete updateData.streamUrl;
     }
 
@@ -312,6 +328,8 @@ export class CameraRepository {
             : DEFAULT_CAMERA_CONFIG.processingEnabled,
         roiPolygon:
           data.roiPolygon !== undefined ? (data.roiPolygon as any) : undefined,
+        roiPolygons:
+          data.roiPolygons !== undefined ? (data.roiPolygons as any) : undefined,
         motionSensitivity:
           data.motionSensitivity !== undefined
             ? data.motionSensitivity
@@ -326,6 +344,9 @@ export class CameraRepository {
         }),
         ...(data.roiPolygon !== undefined && {
           roiPolygon: data.roiPolygon as any,
+        }),
+        ...(data.roiPolygons !== undefined && {
+          roiPolygons: data.roiPolygons as any,
         }),
         ...(data.motionSensitivity !== undefined && {
           motionSensitivity: data.motionSensitivity,
@@ -379,7 +400,10 @@ export class CameraRepository {
   async updateCameraStream(id: string, data: UpdateCameraStreamDto) {
     const updateData: any = { ...data };
     // SEC-17: If streamUrl contains masked credentials (:***@), do not overwrite real password in DB
-    if (typeof updateData.streamUrl === "string" && updateData.streamUrl.includes(":***@")) {
+    if (
+      typeof updateData.streamUrl === "string" &&
+      containsMaskedCredentials(updateData.streamUrl)
+    ) {
       delete updateData.streamUrl;
     }
     return (this.db as any).cameraStream.update({

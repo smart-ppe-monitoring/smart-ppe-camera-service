@@ -136,6 +136,8 @@ export function registerCameraOpenApi(): void {
     path: "/cameras/{id}",
     tags: ["Cameras"],
     summary: "Cập nhật thông tin camera",
+    description:
+      "Cập nhật metadata hoặc streamUrl của camera. Nếu streamUrl chứa mật khẩu che giấu (:***@) khớp với URL hiện tại sau khi che, hệ thống sẽ tự động bỏ qua để bảo toàn mật khẩu gốc trong DB; nếu URL chứa '***' nhưng không khớp sẽ trả về lỗi 400 VALIDATION_ERROR.",
     security: [{ BearerAuth: [] }],
     request: {
       params: cameraIdParamSchema,
@@ -188,6 +190,8 @@ export function registerCameraOpenApi(): void {
     path: "/cameras/{id}/config",
     tags: ["Cameras"],
     summary: "Xem cấu hình AI của camera",
+    description:
+      "Trả về cấu hình AI của camera, bao gồm cả danh sách đa giác ROI (roiPolygons với tùy chọn liên kết restrictedAreaId) và trường tương thích ngược roiPolygon.",
     security: [{ BearerAuth: [] }],
     request: { params: cameraIdParamSchema },
     responses: {
@@ -209,7 +213,9 @@ export function registerCameraOpenApi(): void {
     method: "put",
     path: "/cameras/{id}/config",
     tags: ["Cameras"],
-    summary: "Cập nhật cấu hình AI (FPS, Resolution, Enabled)",
+    summary: "Cập nhật cấu hình AI (FPS, Resolution, ROI Polygons, Enabled)",
+    description:
+      "Cập nhật cấu hình AI. Hỗ trợ mảng đa giác roiPolygons (kèm restrictedAreaId tùy chọn) và tự động đồng bộ hai chiều với trường đơn roiPolygon để giữ tương thích ngược cho AI Vision Engine và các client cũ.",
     security: [{ BearerAuth: [] }],
     request: {
       params: cameraIdParamSchema,
@@ -288,6 +294,8 @@ export function registerCameraOpenApi(): void {
     path: "/cameras/{id}/streams",
     tags: ["Cameras"],
     summary: "Danh sách luồng stream của camera",
+    description:
+      "Quản lý các sub-stream phụ trợ đa giao thức (HLS, WebRTC, RTSP dự phòng) gắn với camera. AI Live Engine chính luôn đọc camera.streamUrl thông qua /cameras/internal/active-streams (chỉ fallback sang CameraStream active đầu tiên khi camera.streamUrl trống).",
     security: [{ BearerAuth: [] }],
     request: { params: cameraIdParamSchema },
     responses: {
@@ -310,6 +318,8 @@ export function registerCameraOpenApi(): void {
     path: "/cameras/{id}/streams",
     tags: ["Cameras"],
     summary: "Thêm luồng stream phụ cho camera",
+    description:
+      "Tạo sub-stream phụ trợ (HLS/WebRTC preview hoặc RTSP dự phòng). Luồng RTSP chính phục vụ AI Live Engine được quản lý qua streamUrl trên /cameras/{id}.",
     security: [{ BearerAuth: [] }],
     request: {
       params: cameraIdParamSchema,
@@ -400,7 +410,10 @@ export function registerCameraOpenApi(): void {
     method: "post",
     path: "/camera-streams",
     tags: ["Camera Streams"],
+    deprecated: true,
     summary: "Thêm luồng stream trực tiếp cho camera",
+    description:
+      "Endpoint legacy cho sub-stream phụ trợ (không dùng trong AI Live pipeline chính). Vui lòng dùng PUT /cameras/{id} cho stream chính hoặc POST /cameras/{id}/streams cho sub-stream.",
     security: [{ BearerAuth: [] }],
     request: {
       body: {
@@ -428,7 +441,10 @@ export function registerCameraOpenApi(): void {
     method: "get",
     path: "/camera-streams/{id}",
     tags: ["Camera Streams"],
+    deprecated: true,
     summary: "Chi tiết luồng stream",
+    description:
+      "Endpoint legacy cho sub-stream phụ trợ (không dùng trong AI Live pipeline chính).",
     security: [{ BearerAuth: [] }],
     request: { params: streamIdParamSchema },
     responses: {
@@ -450,7 +466,10 @@ export function registerCameraOpenApi(): void {
     method: "put",
     path: "/camera-streams/{id}",
     tags: ["Camera Streams"],
+    deprecated: true,
     summary: "Cập nhật luồng stream",
+    description:
+      "Endpoint legacy cho sub-stream phụ trợ (không dùng trong AI Live pipeline chính). Hỗ trợ chống ghi đè mật khẩu che giấu (:***@).",
     security: [{ BearerAuth: [] }],
     request: {
       params: streamIdParamSchema,
@@ -479,7 +498,10 @@ export function registerCameraOpenApi(): void {
     method: "delete",
     path: "/camera-streams/{id}",
     tags: ["Camera Streams"],
+    deprecated: true,
     summary: "Xóa luồng stream",
+    description:
+      "Endpoint legacy cho sub-stream phụ trợ (không dùng trong AI Live pipeline chính).",
     security: [{ BearerAuth: [] }],
     request: { params: streamIdParamSchema },
     responses: {

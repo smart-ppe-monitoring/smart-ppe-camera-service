@@ -4,6 +4,7 @@ import {
   CAMERA_SOURCE_TYPE,
   STREAM_PROTOCOL,
   STREAM_STATUS,
+  CAMERA_ROI_LIMITS,
 } from "../../common/constants/camera.constant";
 import { isCloudMetadataOrLoopbackHost } from "../../common/helpers/url.helper";
 
@@ -161,23 +162,85 @@ export const roiPointSchema = z.object({
   x: z
     .number({ required_error: "Tọa độ X là bắt buộc" })
     .finite("Tọa độ X phải là số hữu hạn")
-    .min(0, "Tọa độ X không được âm")
-    .max(10000, "Tọa độ X không được vượt quá 10000"),
+    .min(CAMERA_ROI_LIMITS.MIN_COORD, "Tọa độ X không được âm")
+    .max(
+      CAMERA_ROI_LIMITS.MAX_COORD,
+      `Tọa độ X không được vượt quá ${CAMERA_ROI_LIMITS.MAX_COORD}`,
+    ),
   y: z
     .number({ required_error: "Tọa độ Y là bắt buộc" })
     .finite("Tọa độ Y phải là số hữu hạn")
-    .min(0, "Tọa độ Y không được âm")
-    .max(10000, "Tọa độ Y không được vượt quá 10000"),
+    .min(CAMERA_ROI_LIMITS.MIN_COORD, "Tọa độ Y không được âm")
+    .max(
+      CAMERA_ROI_LIMITS.MAX_COORD,
+      `Tọa độ Y không được vượt quá ${CAMERA_ROI_LIMITS.MAX_COORD}`,
+    ),
 });
 
 export const roiPolygonSchema = z
   .union([
     z
       .array(roiPointSchema)
-      .min(3, "Đa giác ROI cần ít nhất 3 điểm tọa độ (x, y)")
-      .max(50, "Đa giác ROI không được vượt quá 50 điểm tọa độ"),
+      .min(
+        CAMERA_ROI_LIMITS.MIN_POINTS,
+        `Đa giác ROI cần ít nhất ${CAMERA_ROI_LIMITS.MIN_POINTS} điểm tọa độ (x, y)`,
+      )
+      .max(
+        CAMERA_ROI_LIMITS.MAX_POINTS,
+        `Đa giác ROI không được vượt quá ${CAMERA_ROI_LIMITS.MAX_POINTS} điểm tọa độ`,
+      ),
     z.array(roiPointSchema).length(0),
   ])
+  .nullable()
+  .optional();
+
+export const roiPolygonItemSchema = z.object({
+  id: z
+    .string()
+    .trim()
+    .min(1, "ID đa giác ROI không được rỗng")
+    .max(100)
+    .optional(),
+  name: z
+    .string()
+    .trim()
+    .min(1, "Tên vùng ROI không được rỗng")
+    .max(150)
+    .optional(),
+  restrictedAreaId: uuidSchema.nullable().optional(),
+  points: z
+    .array(roiPointSchema)
+    .min(
+      CAMERA_ROI_LIMITS.MIN_POINTS,
+      `Mỗi đa giác ROI cần ít nhất ${CAMERA_ROI_LIMITS.MIN_POINTS} điểm tọa độ (x, y)`,
+    )
+    .max(
+      CAMERA_ROI_LIMITS.MAX_POINTS,
+      `Mỗi đa giác ROI không được vượt quá ${CAMERA_ROI_LIMITS.MAX_POINTS} điểm tọa độ`,
+    ),
+});
+
+export const roiPolygonsSchema = z
+  .array(roiPolygonItemSchema)
+  .max(
+    CAMERA_ROI_LIMITS.MAX_POLYGONS,
+    `Tối đa ${CAMERA_ROI_LIMITS.MAX_POLYGONS} đa giác ROI trên mỗi camera`,
+  )
+  .superRefine((items, ctx) => {
+    const seenAreaIds = new Set<string>();
+    items.forEach((item, index) => {
+      if (!item.restrictedAreaId) return;
+      if (seenAreaIds.has(item.restrictedAreaId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index, "restrictedAreaId"],
+          message:
+            "Không được trùng lặp restrictedAreaId trong danh sách đa giác ROI của cùng một camera",
+        });
+      }
+      seenAreaIds.add(item.restrictedAreaId);
+    });
+  })
   .nullable()
   .optional();
 
@@ -197,12 +260,30 @@ export const updateCameraConfigSchema = z
       .optional(),
     processingEnabled: z.boolean().optional(),
     roiPolygon: roiPolygonSchema,
+    roiPolygons: roiPolygonsSchema,
     motionSensitivity: z.coerce
       .number()
       .int("Độ nhạy chuyển động phải là số nguyên")
       .min(1, "Độ nhạy chuyển động tối thiểu là 1")
       .max(100, "Độ nhạy chuyển động tối đa là 100")
       .optional(),
+  })
+  .superRefine((data, ctx) => {
+    const hasSingleRoi =
+      Array.isArray(data.roiPolygon) &&
+      data.roiPolygon.length >= CAMERA_ROI_LIMITS.MIN_POINTS;
+    const isMultiCleared =
+      data.roiPolygons === null ||
+      (Array.isArray(data.roiPolygons) && data.roiPolygons.length === 0);
+
+    if (hasSingleRoi && data.roiPolygons !== undefined && isMultiCleared) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["roiPolygons"],
+        message:
+          "Không thể đồng thời truyền roiPolygon có dữ liệu và roiPolygons rỗng/null",
+      });
+    }
   })
   .refine(
     (data) => Object.keys(data).length > 0,

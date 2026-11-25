@@ -34,6 +34,16 @@ export const STREAM_STATUS = {
 
 export type StreamStatus = (typeof STREAM_STATUS)[keyof typeof STREAM_STATUS];
 
+export const MASKED_STREAM_PASSWORD = "***" as const;
+
+export const CAMERA_ROI_LIMITS = {
+  MIN_POINTS: 3,
+  MAX_POINTS: 50,
+  MAX_POLYGONS: 20,
+  MIN_COORD: 0,
+  MAX_COORD: 10000,
+} as const;
+
 export const DEFAULT_CAMERA_CONFIG = {
   CAPTURE_FPS: 10,
   RESOLUTION: "1920x1080",

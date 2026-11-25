@@ -14,6 +14,7 @@ import {
   createCameraStreamSchema,
   updateCameraStreamSchema,
   updateCameraConfigSchema,
+  roiPolygonsSchema,
   cameraHealthLogQuerySchema,
   internalActiveStreamsQuerySchema,
   internalCameraLookupQuerySchema,
@@ -25,6 +26,8 @@ import {
   cameraService,
   defaultCameraAuditLogger,
   maskStreamCredentials,
+  hasMaskedStreamCredentials,
+  resolveStreamUrlUpdate,
 } from "../src/modules/camera/camera.service";
 import { CameraRepository } from "../src/modules/camera/camera.repository";
 import { AppError } from "../src/common/errors/app-error";
@@ -1957,6 +1960,522 @@ describe("Task BE-05: PPE Camera Management Service Suite", () => {
       assert.equal(lookedUp.id, mockCameras[0].id);
       assert.equal(lookedUp.siteId, mockCameras[0].siteId);
       assert.equal(lookedUp.streamUrl, rawRtsp);
+    });
+  });
+
+  // ── 13. Issue #3: Masked StreamUrl Guard & Multi-Polygon ROI Normalization ─
+  describe("13. Issue #3: Masked StreamUrl Guard & Multi-Polygon ROI Normalization", () => {
+    it("should detect masked credentials accurately via hasMaskedStreamCredentials", () => {
+      assert.equal(
+        hasMaskedStreamCredentials("rtsp://admin:***@192.168.1.50:554/live"),
+        true,
+      );
+      assert.equal(
+        hasMaskedStreamCredentials("rtsp://admin:%2A%2A%2A@192.168.1.50:554/live"),
+        true,
+      );
+      assert.equal(
+        hasMaskedStreamCredentials("rtsp://admin:realSecret123@192.168.1.50:554/live"),
+        false,
+      );
+      assert.equal(
+        hasMaskedStreamCredentials("rtsp://192.168.1.50:554/live"),
+        false,
+      );
+      assert.equal(hasMaskedStreamCredentials(""), false);
+      assert.equal(hasMaskedStreamCredentials(null), false);
+    });
+
+    it("should resolve streamUrl update safely across omit, matching mask, mismatched mask, and new URL", () => {
+      assert.deepEqual(resolveStreamUrlUpdate(undefined, "rtsp://admin:***@192.168.1.50:554/live"), {
+        shouldUpdate: false,
+      });
+
+      assert.deepEqual(
+        resolveStreamUrlUpdate(
+          "rtsp://admin:***@192.168.1.50:554/live",
+          "rtsp://admin:***@192.168.1.50:554/live",
+        ),
+        { shouldUpdate: false },
+      );
+
+      assert.deepEqual(
+        resolveStreamUrlUpdate(
+          "rtsp://admin:newPass999@192.168.1.50:554/live",
+          "rtsp://admin:***@192.168.1.50:554/live",
+        ),
+        {
+          shouldUpdate: true,
+          streamUrl: "rtsp://admin:newPass999@192.168.1.50:554/live",
+        },
+      );
+
+      assert.throws(
+        () =>
+          resolveStreamUrlUpdate(
+            "rtsp://admin:***@192.168.1.99:554/live",
+            "rtsp://admin:***@192.168.1.50:554/live",
+          ),
+        (err: any) =>
+          err instanceof AppError &&
+          err.statusCode === 400 &&
+          err.code === ERROR_CODE.VALIDATION_ERROR,
+      );
+    });
+
+    it("updateCamera should skip masked streamUrl matching DB and omit it from audit logs when editing metadata", async () => {
+      const realRtsp = "rtsp://admin:RealPass999@192.168.1.50:554/live";
+      let storedUrl = realRtsp;
+      let repoUpdatePayload: any = null;
+      const auditLogs: any[] = [];
+
+      const mockRepo = {
+        findCameraById: async (id: string) => ({
+          id,
+          siteId: "11111111-1111-4111-8111-111111111111",
+          zoneId: null,
+          name: "Old Cam",
+          code: "CAM-01",
+          streamUrl: storedUrl,
+          status: CAMERA_STATUS.ONLINE,
+          streams: [],
+        }),
+        updateCamera: async (id: string, data: any) => {
+          repoUpdatePayload = { ...data };
+          if (data.streamUrl) {
+            storedUrl = data.streamUrl;
+          }
+          return {
+            id,
+            siteId: "11111111-1111-4111-8111-111111111111",
+            zoneId: data.zoneId ?? null,
+            name: data.name ?? "Old Cam",
+            code: "CAM-01",
+            streamUrl: storedUrl,
+            status: data.status ?? CAMERA_STATUS.ONLINE,
+            streams: [],
+          };
+        },
+      } as unknown as CameraRepository;
+
+      const mockAudit = {
+        recordLog: async (log: any) => {
+          auditLogs.push(log);
+        },
+      };
+
+      const service = new CameraService(mockRepo, mockAudit);
+      const updated = await service.updateCamera(
+        "cam-issue3-1",
+        {
+          name: "New Gate Name",
+          zoneId: "22222222-2222-4222-8222-222222222222",
+          status: CAMERA_STATUS.MAINTENANCE,
+          streamUrl: "rtsp://admin:***@192.168.1.50:554/live",
+        },
+        "admin-1",
+      );
+
+      assert.equal(repoUpdatePayload.name, "New Gate Name");
+      assert.equal(repoUpdatePayload.streamUrl, undefined);
+      assert.equal(storedUrl, realRtsp);
+      assert.equal(updated.streamUrl, "rtsp://admin:***@192.168.1.50:554/live");
+      assert.equal(auditLogs.length, 1);
+      assert.equal(auditLogs[0].details.streamUrl, undefined);
+      assert.equal(auditLogs[0].details.name, "New Gate Name");
+    });
+
+    it("updateCamera with ONLY matching masked streamUrl should return existing sanitized camera without DB write or false audit log", async () => {
+      let repoUpdateCalled = false;
+      const auditLogs: any[] = [];
+
+      const mockRepo = {
+        findCameraById: async (id: string) => ({
+          id,
+          siteId: "11111111-1111-4111-8111-111111111111",
+          name: "Gate Cam",
+          code: "CAM-NOOP",
+          streamUrl: "rtsp://admin:SecretPass@192.168.1.50:554/live",
+          streams: [],
+        }),
+        updateCamera: async () => {
+          repoUpdateCalled = true;
+          return {};
+        },
+      } as unknown as CameraRepository;
+
+      const mockAudit = {
+        recordLog: async (log: any) => {
+          auditLogs.push(log);
+        },
+      };
+
+      const service = new CameraService(mockRepo, mockAudit);
+      const result = await service.updateCamera(
+        "cam-issue3-noop",
+        { streamUrl: "rtsp://admin:***@192.168.1.50:554/live" },
+        "admin-1",
+      );
+
+      assert.equal(repoUpdateCalled, false);
+      assert.equal(auditLogs.length, 0);
+      assert.equal(result.streamUrl, "rtsp://admin:***@192.168.1.50:554/live");
+    });
+
+    it("updateCamera should reject mismatched masked streamUrl with 400 VALIDATION_ERROR", async () => {
+      let repoUpdateCalled = false;
+      const mockRepo = {
+        findCameraById: async (id: string) => ({
+          id,
+          siteId: "11111111-1111-4111-8111-111111111111",
+          name: "Gate Cam",
+          code: "CAM-MISMATCH",
+          streamUrl: "rtsp://admin:SecretPass@192.168.1.50:554/live",
+          streams: [],
+        }),
+        updateCamera: async () => {
+          repoUpdateCalled = true;
+          return {};
+        },
+      } as unknown as CameraRepository;
+
+      const service = new CameraService(mockRepo);
+
+      await assert.rejects(
+        () =>
+          service.updateCamera("cam-issue3-mismatch", {
+            name: "Renamed",
+            streamUrl: "rtsp://operator:***@192.168.1.50:554/live",
+          }),
+        (err: any) =>
+          err instanceof AppError &&
+          err.statusCode === 400 &&
+          err.code === ERROR_CODE.VALIDATION_ERROR,
+      );
+
+      const noAuthRepo = {
+        findCameraById: async (id: string) => ({
+          id,
+          siteId: "11111111-1111-4111-8111-111111111111",
+          streamUrl: "rtsp://192.168.1.50:554/live",
+          streams: [],
+        }),
+        updateCamera: async () => {
+          repoUpdateCalled = true;
+          return {};
+        },
+      } as unknown as CameraRepository;
+
+      await assert.rejects(
+        () =>
+          new CameraService(noAuthRepo).updateCamera("cam-no-auth", {
+            streamUrl: "rtsp://admin:***@192.168.1.50:554/live",
+          }),
+        (err: any) =>
+          err instanceof AppError &&
+          err.statusCode === 400 &&
+          err.code === ERROR_CODE.VALIDATION_ERROR,
+      );
+
+      assert.equal(repoUpdateCalled, false);
+    });
+
+    it("updateCamera should persist new real credentials and mask them in audit log and response", async () => {
+      let repoUpdatePayload: any = null;
+      const auditLogs: any[] = [];
+
+      const mockRepo = {
+        findCameraById: async (id: string) => ({
+          id,
+          siteId: "11111111-1111-4111-8111-111111111111",
+          name: "Cam 1",
+          code: "CAM-REAL",
+          streamUrl: "rtsp://admin:OldSecret@192.168.1.50:554/live",
+          streams: [],
+        }),
+        updateCamera: async (id: string, data: any) => {
+          repoUpdatePayload = { ...data };
+          return {
+            id,
+            siteId: "11111111-1111-4111-8111-111111111111",
+            name: "Cam 1",
+            code: "CAM-REAL",
+            streamUrl: data.streamUrl,
+            streams: [],
+          };
+        },
+      } as unknown as CameraRepository;
+
+      const mockAudit = {
+        recordLog: async (log: any) => {
+          auditLogs.push(log);
+        },
+      };
+
+      const service = new CameraService(mockRepo, mockAudit);
+      const updated = await service.updateCamera(
+        "cam-real-1",
+        { streamUrl: "rtsp://operator:FreshSecret77@192.168.1.60:554/live" },
+        "admin-1",
+      );
+
+      assert.equal(
+        repoUpdatePayload.streamUrl,
+        "rtsp://operator:FreshSecret77@192.168.1.60:554/live",
+      );
+      assert.equal(
+        updated.streamUrl,
+        "rtsp://operator:***@192.168.1.60:554/live",
+      );
+      assert.equal(
+        auditLogs[0].details.streamUrl,
+        "rtsp://operator:***@192.168.1.60:554/live",
+      );
+      assert.ok(!auditLogs[0].details.streamUrl.includes("FreshSecret77"));
+    });
+
+    it("updateCameraStream should skip matching masked streamUrl and reject mismatched masked streamUrl", async () => {
+      let streamUpdatePayload: any = null;
+      const auditLogs: any[] = [];
+
+      const mockRepo = {
+        findCameraStreamById: async (id: string) => ({
+          id,
+          cameraId: "cam-1",
+          camera: { id: "cam-1", siteId: "site-1" },
+          streamUrl: "rtsp://admin:SubSecret12@192.168.1.50:554/sub",
+          fps: 15,
+        }),
+        updateCameraStream: async (id: string, data: any) => {
+          streamUpdatePayload = { ...data };
+          return {
+            id,
+            cameraId: "cam-1",
+            streamUrl: "rtsp://admin:SubSecret12@192.168.1.50:554/sub",
+            fps: data.fps ?? 15,
+          };
+        },
+      } as unknown as CameraRepository;
+
+      const service = new CameraService(mockRepo, {
+        recordLog: async (log: any) => auditLogs.push(log),
+      });
+
+      const updated = await service.updateCameraStream(
+        "stream-1",
+        {
+          fps: 20,
+          streamUrl: "rtsp://admin:***@192.168.1.50:554/sub",
+        },
+        "admin-1",
+      );
+
+      assert.equal(streamUpdatePayload.fps, 20);
+      assert.equal(streamUpdatePayload.streamUrl, undefined);
+      assert.equal(auditLogs[0].details.streamUrl, undefined);
+      assert.equal(updated.streamUrl, "rtsp://admin:***@192.168.1.50:554/sub");
+
+      await assert.rejects(
+        () =>
+          service.updateCameraStream("stream-1", {
+            streamUrl: "rtsp://other:***@192.168.1.50:554/sub",
+          }),
+        (err: any) =>
+          err instanceof AppError &&
+          err.statusCode === 400 &&
+          err.code === ERROR_CODE.VALIDATION_ERROR,
+      );
+    });
+
+    it("createCamera and createCameraStream should reject literal masked '***' credentials", async () => {
+      const mockRepo = {
+        findCameraById: async (id: string) => ({
+          id,
+          siteId: "site-1",
+          streamUrl: "rtsp://admin:pass@192.168.1.10:554/live",
+        }),
+      } as unknown as CameraRepository;
+
+      const service = new CameraService(mockRepo);
+
+      await assert.rejects(
+        () =>
+          service.createCamera({
+            siteId: "11111111-1111-4111-8111-111111111111",
+            name: "Cam Mask",
+            code: "CAM-MASK",
+            streamUrl: "rtsp://admin:***@192.168.1.10:554/live",
+          }),
+        (err: any) =>
+          err instanceof AppError &&
+          err.statusCode === 400 &&
+          err.code === ERROR_CODE.VALIDATION_ERROR,
+      );
+
+      await assert.rejects(
+        () =>
+          service.createCameraStream("cam-1", {
+            streamUrl: "rtsp://admin:***@192.168.1.10:554/sub",
+          }),
+        (err: any) =>
+          err instanceof AppError &&
+          err.statusCode === 400 &&
+          err.code === ERROR_CODE.VALIDATION_ERROR,
+      );
+    });
+
+    it("should validate roiPolygons multi-polygon schema, restrictedAreaId uniqueness, limits, and conflict guard", () => {
+      const tri = [
+        { x: 10, y: 10 },
+        { x: 100, y: 10 },
+        { x: 100, y: 100 },
+      ];
+      const validMulti = updateCameraConfigSchema.safeParse({
+        roiPolygons: [
+          {
+            id: "roi-1",
+            name: "Khu vực cần cẩu",
+            restrictedAreaId: "11111111-1111-4111-8111-111111111111",
+            points: tri,
+          },
+          {
+            id: "roi-2",
+            name: "Hố móng",
+            restrictedAreaId: "22222222-2222-4222-8222-222222222222",
+            points: tri,
+          },
+        ],
+      });
+      assert.equal(validMulti.success, true);
+
+      // Duplicate restrictedAreaId must fail
+      const duplicateArea = roiPolygonsSchema.safeParse([
+        { restrictedAreaId: "11111111-1111-4111-8111-111111111111", points: tri },
+        { restrictedAreaId: "11111111-1111-4111-8111-111111111111", points: tri },
+      ]);
+      assert.equal(duplicateArea.success, false);
+
+      // Exceeding 20 polygons must fail
+      const tooManyPolygons = Array.from({ length: 21 }, (_, idx) => ({
+        id: `roi-${idx}`,
+        points: tri,
+      }));
+      assert.equal(roiPolygonsSchema.safeParse(tooManyPolygons).success, false);
+
+      // < 3 points or > 50 points must fail
+      assert.equal(
+        roiPolygonsSchema.safeParse([{ points: [{ x: 1, y: 1 }, { x: 2, y: 2 }] }])
+          .success,
+        false,
+      );
+      const tooManyPoints = Array.from({ length: 51 }, (_, i) => ({ x: i, y: i }));
+      assert.equal(
+        roiPolygonsSchema.safeParse([{ points: tooManyPoints }]).success,
+        false,
+      );
+
+      // Contradictory roiPolygon (non-empty) + roiPolygons (null or []) must fail
+      assert.equal(
+        updateCameraConfigSchema.safeParse({ roiPolygon: tri, roiPolygons: [] })
+          .success,
+        false,
+      );
+      assert.equal(
+        updateCameraConfigSchema.safeParse({ roiPolygon: tri, roiPolygons: null })
+          .success,
+        false,
+      );
+    });
+
+    it("should normalize roiPolygons <-> roiPolygon across updateCameraConfig, getCameraConfig, resetCameraConfig, and findInternalActiveStreams", async () => {
+      let persistedConfig: any = null;
+      const tri1 = [
+        { x: 0.1, y: 0.1 },
+        { x: 0.5, y: 0.1 },
+        { x: 0.5, y: 0.5 },
+      ];
+      const tri2 = [
+        { x: 0.6, y: 0.2 },
+        { x: 0.9, y: 0.2 },
+        { x: 0.9, y: 0.8 },
+      ];
+
+      const mockRepo = {
+        findCameraById: async (id: string) => ({
+          id,
+          siteId: "11111111-1111-4111-8111-111111111111",
+          code: "CAM-ROI",
+          name: "ROI Cam",
+          streamUrl: "rtsp://admin:pass@192.168.1.50:554/live",
+        }),
+        findCameraConfig: async () => persistedConfig,
+        upsertCameraConfig: async (cameraId: string, data: any) => {
+          persistedConfig = {
+            id: "cfg-roi-1",
+            cameraId,
+            enabled: data.enabled ?? true,
+            captureFps: data.captureFps ?? 10,
+            resolution: data.resolution ?? "1920x1080",
+            processingEnabled: data.processingEnabled ?? true,
+            roiPolygon: data.roiPolygon !== undefined ? data.roiPolygon : persistedConfig?.roiPolygon ?? null,
+            roiPolygons: data.roiPolygons !== undefined ? data.roiPolygons : persistedConfig?.roiPolygons ?? null,
+            motionSensitivity: data.motionSensitivity ?? 75,
+          };
+          return persistedConfig;
+        },
+        findInternalActiveStreams: async () => [
+          {
+            id: "cam-roi-1",
+            siteId: "11111111-1111-4111-8111-111111111111",
+            zoneId: null,
+            name: "ROI Cam",
+            code: "CAM-ROI",
+            sourceType: CAMERA_SOURCE_TYPE.RTSP,
+            streamUrl: "rtsp://admin:RealPass@192.168.1.50:554/live",
+            status: CAMERA_STATUS.ONLINE,
+            config: persistedConfig,
+            streams: [],
+          },
+        ],
+      } as unknown as CameraRepository;
+
+      const service = new CameraService(mockRepo);
+
+      // 1. Update with multi-polygon roiPolygons -> populates legacy roiPolygon with first polygon points
+      const multiUpdated = await service.updateCameraConfig("cam-roi-1", {
+        roiPolygons: [
+          { id: "r1", name: "Khu A", points: tri1 },
+          { id: "r2", name: "Khu B", points: tri2 },
+        ],
+      });
+      assert.equal(multiUpdated.roiPolygons?.length, 2);
+      assert.deepEqual(multiUpdated.roiPolygon, tri1);
+
+      // 2. Internal stream exposes both roiPolygon and roiPolygons
+      const internal = await service.findInternalActiveStreams({});
+      assert.equal(internal.length, 1);
+      assert.deepEqual(internal[0].config.roiPolygon, tri1);
+      assert.equal(internal[0].config.roiPolygons?.length, 2);
+
+      // 3. Clearing with [] sets both roiPolygon and roiPolygons to null
+      const cleared = await service.updateCameraConfig("cam-roi-1", {
+        roiPolygons: [],
+      });
+      assert.equal(cleared.roiPolygon, null);
+      assert.equal(cleared.roiPolygons, null);
+
+      // 4. Legacy update with roiPolygon wraps into roiPolygons for getCameraConfig
+      await service.updateCameraConfig("cam-roi-1", {
+        roiPolygon: tri2,
+      });
+      const fetched = await service.getCameraConfig("cam-roi-1");
+      assert.deepEqual(fetched.roiPolygon, tri2);
+      assert.deepEqual(fetched.roiPolygons, [{ points: tri2 }]);
+
+      // 5. Reset clears both roiPolygon and roiPolygons
+      const reset = await service.resetCameraConfig("cam-roi-1");
+      assert.equal(reset.roiPolygon, null);
+      assert.equal(reset.roiPolygons, null);
     });
   });
 });
