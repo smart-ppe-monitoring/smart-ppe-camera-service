@@ -116,6 +116,18 @@ export interface PingCameraResultDto {
   checkedAt: string | Date;
 }
 
+export interface CameraCountsBySiteQueryDto {
+  siteIds?: string[];
+}
+
+export interface CameraSiteCountDto {
+  siteId: string;
+  total: number;
+  online: number;
+  offline: number;
+  error: number;
+}
+
 // ── Internal Machine-to-Machine Stream DTOs ─────────────────────────────────
 export interface InternalActiveStreamsQueryDto {
   siteId?: string;

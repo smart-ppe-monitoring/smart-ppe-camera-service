@@ -18,6 +18,7 @@ import {
   updateCameraConfigSchema,
   cameraHealthLogQuerySchema,
   cameraStatusCountsQuerySchema,
+  cameraCountsBySiteQuerySchema,
   internalActiveStreamsQuerySchema,
   internalCameraLookupQuerySchema,
 } from "./camera.validation";
@@ -39,6 +40,14 @@ cameraRouter.get(
   requirePermission(PERMISSIONS.PPE_CAMERA_READ),
   validate(cameraStatusCountsQuerySchema, "query"),
   cameraController.getStatusCounts,
+);
+
+cameraRouter.get(
+  "/counts-by-site",
+  authMiddleware,
+  requirePermission(PERMISSIONS.PPE_CAMERA_READ),
+  validate(cameraCountsBySiteQuerySchema, "query"),
+  cameraController.getCountsBySite,
 );
 
 // Internal M2M endpoints (MUST stay before /:id param route)

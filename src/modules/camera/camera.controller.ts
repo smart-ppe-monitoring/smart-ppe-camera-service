@@ -8,6 +8,7 @@ import {
   UpdateCameraStreamDto,
   UpdateCameraConfigDto,
   CameraHealthLogQueryDto,
+  CameraCountsBySiteQueryDto,
   InternalActiveStreamsQueryDto,
   InternalCameraLookupQueryDto,
 } from "./camera.dto";
@@ -323,6 +324,22 @@ export class CameraController {
     try {
       const siteId = req.query.siteId as string | undefined;
       const result = await this.service.getStatusCounts(siteId, req.user);
+      res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  getCountsBySite = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const query = req.query as unknown as CameraCountsBySiteQueryDto;
+      const result = await this.service.getCountsBySite(
+        query.siteIds,
+        req.user,
+      );
       res.json({
         success: true,
         data: result,

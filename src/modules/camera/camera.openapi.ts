@@ -11,6 +11,7 @@ import {
   updateCameraConfigSchema,
   cameraHealthLogQuerySchema,
   cameraStatusCountsQuerySchema,
+  cameraCountsBySiteQuerySchema,
 } from "./camera.validation";
 import { z } from "zod";
 
@@ -49,6 +50,47 @@ export function registerCameraOpenApi(): void {
             }),
           },
         },
+      },
+    },
+  });
+
+  openapiRegistry.registerPath({
+    method: "get",
+    path: "/cameras/counts-by-site",
+    tags: ["Cameras"],
+    summary:
+      "Thống kê số lượng camera gộp theo từng công trường (total, online, offline, error)",
+    description:
+      "Thực hiện 1 truy vấn groupBy theo siteId và status để trả về số lượng camera cho danh sách công trường (/sites). Tôn trọng chặt chẽ Site Tenancy Scoping theo JWT siteIds.",
+    security: [{ BearerAuth: [] }],
+    request: { query: cameraCountsBySiteQuerySchema },
+    responses: {
+      200: {
+        description: "Lấy thống kê camera theo công trường thành công",
+        content: {
+          "application/json": {
+            schema: z.object({
+              success: z.boolean(),
+              data: z.array(
+                z.object({
+                  siteId: z.string().uuid(),
+                  total: z.number().int(),
+                  online: z.number().int(),
+                  offline: z.number().int(),
+                  error: z.number().int(),
+                }),
+              ),
+            }),
+          },
+        },
+      },
+      403: {
+        description:
+          "Không có quyền PPE_CAMERA_READ hoặc truy vấn công trường ngoài phạm vi được phân công",
+      },
+      422: {
+        description:
+          "Tham số siteIds không hợp lệ (không đúng định dạng UUID hoặc vượt quá giới hạn)",
       },
     },
   });

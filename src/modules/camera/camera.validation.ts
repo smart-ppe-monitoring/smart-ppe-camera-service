@@ -311,6 +311,44 @@ export const cameraStatusCountsQuerySchema = z.object({
   siteId: uuidSchema.optional(),
 });
 
+const MAX_SITE_IDS_FILTER = 100;
+
+export const cameraCountsBySiteQuerySchema = z.object({
+  siteIds: z
+    .union([z.string(), z.array(z.string())])
+    .optional()
+    .transform((val, ctx): string[] | undefined => {
+      if (val === undefined) return undefined;
+      const rawItems = Array.isArray(val)
+        ? val.flatMap((v) => v.split(","))
+        : val.split(",");
+      const trimmed = rawItems
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      if (trimmed.length === 0) return undefined;
+      if (trimmed.length > MAX_SITE_IDS_FILTER) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Tối đa ${MAX_SITE_IDS_FILTER} siteIds trong một yêu cầu`,
+        });
+        return z.NEVER;
+      }
+      for (const item of trimmed) {
+        if (!UUID_REGEX.test(item)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "Mỗi siteId trong siteIds phải là định dạng UUID hợp lệ",
+          });
+          return z.NEVER;
+        }
+      }
+      return Array.from(new Set(trimmed));
+    })
+    .describe(
+      "Danh sách siteId cần thống kê (UUID, phân tách bằng dấu phẩy hoặc lặp lại query param)",
+    ),
+});
+
 // ── Internal Machine-to-Machine Schemas ──────────────────────────────────────
 export const internalActiveStreamsQuerySchema = z.object({
   siteId: uuidSchema.optional(),

@@ -16,6 +16,7 @@ import {
   UpdateCameraConfigDto,
   CreateCameraHealthLogDto,
   CameraHealthLogQueryDto,
+  CameraSiteCountDto,
   PaginatedResultDto,
 } from "./camera.dto";
 import {
@@ -560,6 +561,48 @@ export class CameraRepository {
     }
 
     return { total, online, offline };
+  }
+
+  async getCountsBySite(siteFilter?: {
+    siteIds?: string[];
+  }): Promise<CameraSiteCountDto[]> {
+    const where: any = { deletedAt: null };
+    if (siteFilter?.siteIds && siteFilter.siteIds.length > 0) {
+      where.siteId = { in: siteFilter.siteIds };
+    }
+
+    const groups = await (this.db as any).camera.groupBy({
+      by: ["siteId", "status"],
+      where,
+      _count: {
+        _all: true,
+      },
+    });
+
+    const siteMap = new Map<string, CameraSiteCountDto>();
+
+    for (const group of groups) {
+      const siteId = group.siteId as string;
+      const count = group._count?._all ?? 0;
+      let entry = siteMap.get(siteId);
+      if (!entry) {
+        entry = { siteId, total: 0, online: 0, offline: 0, error: 0 };
+        siteMap.set(siteId, entry);
+      }
+
+      entry.total += count;
+      if (group.status === CAMERA_STATUS.ONLINE) {
+        entry.online += count;
+      } else if (group.status === CAMERA_STATUS.ERROR) {
+        entry.error += count;
+      } else {
+        entry.offline += count;
+      }
+    }
+
+    return Array.from(siteMap.values()).sort((a, b) =>
+      a.siteId.localeCompare(b.siteId),
+    );
   }
 
   async findInternalActiveStreams(filters?: {

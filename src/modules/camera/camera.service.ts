@@ -11,6 +11,7 @@ import {
   UpdateCameraConfigDto,
   CameraHealthLogQueryDto,
   PingCameraResultDto,
+  CameraSiteCountDto,
   InternalActiveStreamsQueryDto,
   InternalCameraLookupQueryDto,
   InternalActiveCameraStreamDto,
@@ -993,6 +994,47 @@ export class CameraService {
     }
 
     return this.repository.getStatusCounts(siteFilter);
+  }
+
+  async getCountsBySite(
+    requestedSiteIds?: string[],
+    userContext?: UserContext,
+  ): Promise<CameraSiteCountDto[]> {
+    const allowedSiteIds = this.getAllowedSiteIds(userContext);
+    const normalizedRequested =
+      Array.isArray(requestedSiteIds) && requestedSiteIds.length > 0
+        ? Array.from(new Set(requestedSiteIds))
+        : undefined;
+
+    if (allowedSiteIds !== null) {
+      const uniqueAllowed = Array.from(new Set(allowedSiteIds));
+      if (normalizedRequested) {
+        const allowedSet = new Set(uniqueAllowed);
+        const hasUnauthorized = normalizedRequested.some(
+          (id) => !allowedSet.has(id),
+        );
+        if (hasUnauthorized) {
+          throw new AppError(
+            "Bạn không có quyền truy cập camera thuộc công trường này",
+            403,
+            ERROR_CODE.FORBIDDEN,
+          );
+        }
+        return this.repository.getCountsBySite({
+          siteIds: normalizedRequested,
+        });
+      }
+
+      if (uniqueAllowed.length === 0) {
+        return [];
+      }
+
+      return this.repository.getCountsBySite({ siteIds: uniqueAllowed });
+    }
+
+    return this.repository.getCountsBySite(
+      normalizedRequested ? { siteIds: normalizedRequested } : undefined,
+    );
   }
 
   private toInternalStreamDto(camera: any): InternalActiveCameraStreamDto {
